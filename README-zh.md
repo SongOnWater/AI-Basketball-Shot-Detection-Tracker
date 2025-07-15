@@ -39,14 +39,67 @@ https://github.com/avishah3/AI-Basketball-Shot-Detector-Tracker/assets/115107522
 
 通过线性回归算法预测篮球的轨迹，如果预测的轨迹与篮球架相交，算法就会注册为成功投篮。
 
-## 如何使用此代码
+## 安装与使用
 
-1. 克隆此仓库到本地机器。
-2. 下载`config.yaml`中指定的数据集，并调整配置文件中的路径以匹配你的本地设置。
-3. 按照`main.py`中的指示进行模型训练，准备进行投篮检测。
-4. 通过你的摄像头或iPhone运行`shot_detector.py`进行实时投篮检测，或者输入视频进行投篮检测分析。
-5. 如果你不想自己训练模型，可以使用根目录中的已经训练好的`best.pth`模型。
-6. 请确保已安装所需的Python包，包括OpenCV、numpy和Ultralytics的YOLO。欢迎对本项目进行贡献 - 提交Pull Request。对于问题或建议，请在本仓库中提交问题。
+### 快速开始（推荐）
+
+1. 克隆本仓库：
+```bash
+git clone https://github.com/avishah3/AI-Basketball-Shot-Detector-Tracker.git
+cd AI-Basketball-Shot-Detector-Tracker
+```
+
+2. 运行自动安装脚本：
+```bash
+chmod +x setup_basketball_ai.sh
+./setup_basketball_ai.sh
+```
+
+3. 启动投篮检测器：
+```bash
+./run_detector.sh
+```
+
+### 手动安装
+
+适用于高级用户或自定义设置：
+
+1. 创建conda环境：
+```bash
+conda create -n basketball-ai python=3.8
+conda activate basketball-ai
+```
+
+2. 安装Python依赖包：
+```bash
+pip install -r requirements.txt
+pip install --upgrade ultralytics
+```
+
+3. 安装系统依赖：
+```bash
+sudo apt-get update
+sudo apt-get install -y qt5-default libxcb-xinerama0 xvfb
+```
+
+4. 运行检测器：
+```bash
+xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" python shot_detector.py
+```
+
+### 使用预训练模型
+
+**如果不想自己训练模型**，可以直接使用提供的'best.pt'模型（跳过训练步骤）。
+
+### 训练自定义模型（可选）
+
+1. 下载config.yaml中指定的数据集
+2. 调整配置文件中的路径
+3. 按照main.py中的说明训练模型
+
+### 输入选项
+- 摄像头：默认输入（确保摄像头已连接）
+- 视频文件：修改shot_detector.py指定视频路径
 
 ## 免责声明
 

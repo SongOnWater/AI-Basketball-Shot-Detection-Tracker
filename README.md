@@ -39,14 +39,67 @@ To enhance the accuracy of the shot detection, the algorithm not only tracks the
 
 A linear regression is used to predict the ball's trajectory based on its positions. If the projected trajectory intersects with the hoop, the algorithm registers it as a successful shot.
 
-## How to Use This Code
+## Installation & Usage
 
-1. Clone this repository to your local machine. Install the requirements.
-2. Download the dataset specified in 'config.yaml' and adjust the paths in the configuration file to match your local setup.
-3. Follow the instructions in 'main.py' to train the model and prepare for shot detection.
-4. Run 'shot_detector.py' through your webcam or iPhone for real-time shot detection. Or input a video for shot detection analysis.
-   
-**If you don't want to train the model yourself, please use the pre-trained 'best.pt' model (skip steps 2 & 3)**
+### Quick Start (Recommended)
+
+1. Clone this repository:
+```bash
+git clone https://github.com/avishah3/AI-Basketball-Shot-Detector-Tracker.git
+cd AI-Basketball-Shot-Detector-Tracker
+```
+
+2. Run the automated setup script:
+```bash
+chmod +x setup_basketball_ai.sh
+./setup_basketball_ai.sh
+```
+
+3. Start the shot detector:
+```bash
+./run_detector.sh
+```
+
+### Manual Installation
+
+For advanced users or custom setups:
+
+1. Create conda environment:
+```bash
+conda create -n basketball-ai python=3.8
+conda activate basketball-ai
+```
+
+2. Install Python packages:
+```bash
+pip install -r requirements.txt
+pip install --upgrade ultralytics
+```
+
+3. Install system dependencies:
+```bash
+sudo apt-get update
+sudo apt-get install -y qt5-default libxcb-xinerama0 xvfb
+```
+
+4. Run the detector:
+```bash
+xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" python shot_detector.py
+```
+
+### Using the Pre-trained Model
+
+**If you don't want to train the model yourself**, simply use the provided 'best.pt' model (skip training steps).
+
+### Training Your Own Model (Optional)
+
+1. Download the dataset specified in 'config.yaml'
+2. Adjust the paths in the configuration file
+3. Follow the instructions in 'main.py' to train the model
+
+### Input Options
+- Webcam: Default input (make sure camera is connected)
+- Video file: Modify shot_detector.py to specify your video path
    
 Contributions to this project are welcome - submit a pull request. For issues or suggestions, open an issue in this repository.
 
