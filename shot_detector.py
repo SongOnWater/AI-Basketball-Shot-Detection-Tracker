@@ -5,14 +5,52 @@ import cv2
 import cvzone
 import math
 import numpy as np
+import json
+import time
+from tqdm import tqdm
 from utils import score, detect_down, detect_up, in_hoop_region, clean_hoop_pos, clean_ball_pos, get_device
+from datetime import datetime
 
+class ShotLogger:
+    def __init__(self):
+        self.shots = []
+        self.start_time = time.time()
+        self.frame_count = 0
+        self.success_count = 0
+        self.progress = 0
+        
+    def log_shot(self, frame_idx, timestamp, ball_pos, hoop_pos, threshold):
+        self.success_count += 1
+        self.shots.append({
+            "frame_index": frame_idx,
+            "timestamp": timestamp,
+            "ball_position": ball_pos,
+            "hoop_position": hoop_pos,
+            "threshold": threshold
+        })
+    
+    def update_progress(self, current, total):
+        self.progress = (current / total) * 100
+        
+    def save_log(self, filename="shot_log.json"):
+        stats = {
+            "processing_start": datetime.fromtimestamp(self.start_time).strftime('%Y-%m-%d %H:%M:%S'),
+            "total_frames": self.frame_count,
+            "successful_shots": self.success_count,
+            "processing_time_seconds": time.time() - self.start_time,
+            "shots": self.shots
+        }
+        with open(filename, 'w') as f:
+            json.dump(stats, f, indent=2)
 
 class ShotDetector:
-    def __init__(self):
+    def __init__(self, output_video=None):
         # Load the YOLO model created from main.py - change text to your relative path
         self.overlay_text = "Waiting..."
         self.model = YOLO("best.pt")
+        self.output_video = output_video
+        self.video_writer = None
+        self.logger = ShotLogger()
         
         # Uncomment this line to accelerate inference. Note that this may cause errors in some setups.
         #self.model.half()
@@ -24,6 +62,7 @@ class ShotDetector:
 
         # Use video - replace text with your video path
         self.cap = cv2.VideoCapture("video_test_5.mp4")
+        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
         self.ball_pos = []  # array of tuples ((x_pos, y_pos), frame count, width, height, conf)
         self.hoop_pos = []  # array of tuples ((x_pos, y_pos), frame count, width, height, conf)
@@ -48,14 +87,28 @@ class ShotDetector:
         self.run()
 
     def run(self):
+        # Initialize video writer if output path is provided
+        if self.output_video:
+            ret, frame = self.cap.read()
+            if ret:
+                height, width = frame.shape[:2]
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                self.video_writer = cv2.VideoWriter(self.output_video, fourcc, 30.0, (width, height))
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Rewind to first frame
+
+        # Initialize progress bar
+        progress_bar = tqdm(total=self.total_frames, desc="Processing Video", unit='frames')
+
         while True:
             ret, self.frame = self.cap.read()
 
             if not ret:
                 # End of the video or an error occurred
+                if self.video_writer:
+                    self.video_writer.release()
                 break
 
-            results = self.model(self.frame, stream=True, device=self.device)
+            results = self.model(self.frame, stream=True, device=self.device, verbose=False)
 
             for r in results:
                 boxes = r.boxes
@@ -88,15 +141,28 @@ class ShotDetector:
             self.shot_detection()
             self.display_score()
             self.frame_count += 1
+            self.logger.frame_count = self.frame_count
+            self.logger.update_progress(self.frame_count, self.total_frames)
+            progress_bar.update(1)
 
-            cv2.imshow('Frame', self.frame)
+            # Write frame to output video if specified
+            if self.video_writer:
+                self.video_writer.write(self.frame)
+            else:
+                cv2.imshow('Frame', self.frame)
+                # Close if 'q' is clicked
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
 
-            # Close if 'q' is clicked
-            if cv2.waitKey(1) & 0xFF == ord('q'):  # higher waitKey slows video down, use 1 for webcam
-                break
-
+        progress_bar.close()
         self.cap.release()
-        cv2.destroyAllWindows()
+        if self.video_writer:
+            self.video_writer.release()
+        else:
+            cv2.destroyAllWindows()
+        
+        # Save shot log after processing completes
+        self.logger.save_log()
 
     def clean_motion(self):
         # Clean and display ball motion
@@ -135,7 +201,15 @@ class ShotDetector:
                         self.overlay_color = (0, 255, 0)  # Green for make
                         self.overlay_text = "Make"
                         self.fade_counter = self.fade_frames
-
+                        # Log successful shot
+                        timestamp = self.frame_count / 30  # assuming 30fps
+                        self.logger.log_shot(
+                            frame_idx=self.frame_count,
+                            timestamp=timestamp,
+                            ball_pos=self.ball_pos[-1][0],
+                            hoop_pos=self.hoop_pos[-1][0],
+                            threshold=0.5  # default threshold
+                        )
                     else:
                         self.overlay_color = (255, 0, 0)  # Red for miss
                         self.overlay_text = "Miss"
@@ -157,7 +231,6 @@ class ShotDetector:
             # Display overlay text with color (overlay_color)
             cv2.putText(self.frame, self.overlay_text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 3,
                         self.overlay_color, 6)
-            # cv2.putText(self.frame, self.overlay_text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 0, 0), 3)
 
         # Gradually fade out color after shot
         if self.fade_counter > 0:
@@ -167,5 +240,9 @@ class ShotDetector:
 
 
 if __name__ == "__main__":
-    ShotDetector()
-
+    import argparse
+    parser = argparse.ArgumentParser(description='Basketball Shot Detector')
+    parser.add_argument('--output', type=str, help='Output video file path')
+    args = parser.parse_args()
+    
+    ShotDetector(output_video=args.output)

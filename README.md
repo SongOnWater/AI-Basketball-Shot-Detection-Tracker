@@ -66,14 +66,13 @@ For advanced users or custom setups:
 
 1. Create conda environment:
 ```bash
-conda create -n basketball-ai python=3.8
+conda create -n basketball-ai python=3.10.11
 conda activate basketball-ai
 ```
 
 2. Install Python packages:
 ```bash
 pip install -r requirements.txt
-pip install --upgrade ultralytics
 ```
 
 3. Install system dependencies:
@@ -86,6 +85,16 @@ sudo apt-get install -y qt5-default libxcb-xinerama0 xvfb
 ```bash
 xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" python shot_detector.py
 ```
+
+### Environment Details
+
+This project uses the following key packages:
+- Python with the following main dependencies:
+  - Ultralytics YOLOv8: 8.3.166
+  - PyTorch: 2.7.1
+  - OpenCV: 4.11.0.86
+  - NumPy: 2.2.6
+  - cvzone: 1.5.6
 
 ### Using the Pre-trained Model
 
