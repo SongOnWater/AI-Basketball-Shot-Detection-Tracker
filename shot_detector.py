@@ -255,10 +255,23 @@ class ShotLogger:
         return debug_log_path
 
 class ShotDetector:
-    def __init__(self, input_video="video_test_5.mp4", output_video=None):
-        # Load the YOLO model created from main.py - change text to your relative path
+    def __init__(self, input_video="video_test_5.mp4", output_video=None, ball_model_path="yolov8m.pt", hoop_model_path="best.pt"):
+        # Load dual models for optimal detection
         self.overlay_text = "Waiting..."
-        self.model = YOLO("best.pt")
+
+        # Load ball detection model (YOLOv8m for sports ball)
+        self.ball_model_path = ball_model_path
+        self.ball_model = YOLO(ball_model_path)
+        print(f"🏀 Loaded ball model: {ball_model_path}")
+
+        # Load hoop detection model (custom trained model)
+        self.hoop_model_path = hoop_model_path
+        self.hoop_model = YOLO(hoop_model_path)
+        print(f"🏀 Loaded hoop model: {hoop_model_path}")
+
+        # For backward compatibility, set primary model as ball model
+        self.model = self.ball_model
+        self.model_path = ball_model_path
         self.output_video = output_video
         self.video_writer = None
         self.input_video = input_video
@@ -267,7 +280,21 @@ class ShotDetector:
         # Uncomment this line to accelerate inference. Note that this may cause errors in some setups.
         #self.model.half()
         
-        self.class_names = ['Basketball', 'Basketball Hoop']
+        # Initialize class names for both models
+        self.class_names = ['Basketball', 'Basketball Hoop']  # Default for custom models
+
+        # Get class names from both models
+        if hasattr(self.ball_model, 'names'):
+            self.ball_model_classes = self.ball_model.names
+            print(f"📋 Ball model classes: {len(self.ball_model_classes)} classes (including 'sports ball')")
+        else:
+            self.ball_model_classes = {0: "Basketball"}
+
+        if hasattr(self.hoop_model, 'names'):
+            self.hoop_model_classes = self.hoop_model.names
+            print(f"📋 Hoop model classes: {list(self.hoop_model_classes.values())}")
+        else:
+            self.hoop_model_classes = {0: "Basketball", 1: "Basketball Hoop"}
         self.device = get_device()
         # Uncomment line below to use webcam (I streamed to my iPhone using Iriun Webcam)
         # self.cap = cv2.VideoCapture(0)
@@ -296,8 +323,6 @@ class ShotDetector:
         self.fade_counter = 0
         self.overlay_color = (0, 0, 0)
 
-        self.run()
-
     def run(self):
         # Initialize video writer if output path is provided
         if self.output_video:
@@ -320,57 +345,93 @@ class ShotDetector:
                     self.video_writer.release()
                 break
 
-            results = self.model(self.frame, stream=True, device=self.device, verbose=False)
+            # Run dual model detection
+            ball_results = self.ball_model(self.frame, stream=True, device=self.device, verbose=False)
+            hoop_results = self.hoop_model(self.frame, stream=True, device=self.device, verbose=False)
 
             # Collect all detections in current frame for logging
             current_frame_balls = []
             current_frame_hoops = []
 
-            for r in results:
+            # Process ball detections from YOLOv8m (sports ball)
+            for r in ball_results:
                 boxes = r.boxes
-                for box in boxes:
-                    # Bounding box
-                    x1, y1, x2, y2 = box.xyxy[0]
-                    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-                    w, h = x2 - x1, y2 - y1
+                if boxes is not None:
+                    for box in boxes:
+                        # Bounding box
+                        x1, y1, x2, y2 = box.xyxy[0]
+                        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                        w, h = x2 - x1, y2 - y1
 
-                    # Confidence
-                    conf = math.ceil((box.conf[0] * 100)) / 100
+                        # Confidence
+                        conf = math.ceil((box.conf[0] * 100)) / 100
 
-                    # Class Name
-                    cls = int(box.cls[0])
-                    current_class = self.class_names[cls]
+                        # Class Name from ball model
+                        cls = int(box.cls[0])
+                        if cls < len(self.ball_model_classes):
+                            current_class = self.ball_model_classes[cls]
+                        else:
+                            current_class = f"Unknown_{cls}"
 
-                    center = (int(x1 + w / 2), int(y1 + h / 2))
+                        center = (int(x1 + w / 2), int(y1 + h / 2))
 
-                    # Collect all detections for current frame logging
-                    if current_class == "Basketball":
-                        current_frame_balls.append({
-                            "bbox": [x1, y1, x2, y2],
-                            "center": center,
-                            "size": {"width": w, "height": h},
-                            "confidence": float(conf),
-                            "class": current_class
-                        })
+                        # Check if this is a sports ball (basketball)
+                        is_ball = (current_class in ["Basketball", "sports ball"] or
+                                  "ball" in current_class.lower())
 
-                        # Only create ball points if reasonable confidence or near hoop
-                        if (conf > 0.3 or (in_hoop_region(center, self.hoop_pos) and conf > 0.15)):
-                            self.ball_pos.append((center, self.frame_count, w, h, conf))
-                            cvzone.cornerRect(self.frame, (x1, y1, w, h))
+                        if is_ball:
+                            current_frame_balls.append({
+                                "bbox": [x1, y1, x2, y2],
+                                "center": center,
+                                "size": {"width": w, "height": h},
+                                "confidence": float(conf),
+                                "class": current_class
+                            })
 
-                    elif current_class == "Basketball Hoop":
-                        current_frame_hoops.append({
-                            "bbox": [x1, y1, x2, y2],
-                            "center": center,
-                            "size": {"width": w, "height": h},
-                            "confidence": float(conf),
-                            "class": current_class
-                        })
+                            # Only create ball points if reasonable confidence or near hoop
+                            if (conf > 0.3 or (in_hoop_region(center, self.hoop_pos) and conf > 0.15)):
+                                self.ball_pos.append((center, self.frame_count, w, h, conf))
+                                cvzone.cornerRect(self.frame, (x1, y1, w, h))
 
-                        # Create hoop points if high confidence
-                        if conf > 0.5:
-                            self.hoop_pos.append((center, self.frame_count, w, h, conf))
-                            cvzone.cornerRect(self.frame, (x1, y1, w, h))
+            # Process hoop detections from custom model
+            for r in hoop_results:
+                boxes = r.boxes
+                if boxes is not None:
+                    for box in boxes:
+                        # Bounding box
+                        x1, y1, x2, y2 = box.xyxy[0]
+                        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                        w, h = x2 - x1, y2 - y1
+
+                        # Confidence
+                        conf = math.ceil((box.conf[0] * 100)) / 100
+
+                        # Class Name from hoop model
+                        cls = int(box.cls[0])
+                        if cls < len(self.hoop_model_classes):
+                            current_class = self.hoop_model_classes[cls]
+                        else:
+                            current_class = f"Unknown_{cls}"
+
+                        center = (int(x1 + w / 2), int(y1 + h / 2))
+
+                        # Check if this is a basketball hoop
+                        is_hoop = (current_class in ["Basketball Hoop", "hoop"] or
+                                  "hoop" in current_class.lower() or "basket" in current_class.lower())
+
+                        if is_hoop:
+                            current_frame_hoops.append({
+                                "bbox": [x1, y1, x2, y2],
+                                "center": center,
+                                "size": {"width": w, "height": h},
+                                "confidence": float(conf),
+                                "class": current_class
+                            })
+
+                            # Create hoop points if high confidence
+                            if conf > 0.5:
+                                self.hoop_pos.append((center, self.frame_count, w, h, conf))
+                                cvzone.cornerRect(self.frame, (x1, y1, w, h))
 
             self.clean_motion()
             self.shot_detection()
@@ -414,10 +475,13 @@ class ShotDetector:
         else:
             cv2.destroyAllWindows()
         
-        # Close frame log file if it exists
-        if hasattr(self.logger, '_debug_file'):
-            self.logger._debug_file.write(']')  # Close JSON array
-            self.logger._debug_file.close()
+        # Close frame log file if it exists and is still open
+        if hasattr(self.logger, '_debug_file') and self.logger._debug_file and not self.logger._debug_file.closed:
+            try:
+                self.logger._debug_file.write(']')  # Close JSON array
+                self.logger._debug_file.close()
+            except (ValueError, AttributeError) as e:
+                print(f"Warning: Could not close debug file properly: {e}")
         
         # Save shot log after processing completes
         log_filename = self.logger.save_log()
@@ -542,6 +606,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Basketball Shot Detector')
     parser.add_argument('--input', type=str, default='video_test_5.mp4', help='Input video file path')
     parser.add_argument('--output', type=str, help='Output video file path')
+    parser.add_argument('--ball-model', type=str, default='yolov8m.pt', help='Ball detection model (default: yolov8m.pt)')
+    parser.add_argument('--hoop-model', type=str, default='best.pt', help='Hoop detection model (default: best.pt)')
     args = parser.parse_args()
-    
+
+    # Create detector with dual models
+    detector = ShotDetector(args.input, args.output, args.ball_model, args.hoop_model)
+    detector.run()
     ShotDetector(input_video=args.input, output_video=args.output)
