@@ -66,7 +66,7 @@ For advanced users or custom setups:
 
 1. Create conda environment:
 ```bash
-conda create -n basketball-ai python=3.10.11
+conda create -n basketball-ai python=3.10 
 conda activate basketball-ai
 ```
 

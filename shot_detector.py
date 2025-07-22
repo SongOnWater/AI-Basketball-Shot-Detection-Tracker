@@ -94,16 +94,19 @@ class ShotLogger:
         
         return filename
         
-    def log_frame_data(self, frame_count, all_balls, all_hoops, selected_ball_idx=-1, selected_hoop_idx=-1):
+    def log_frame_data(self, frame_count, all_balls, all_hoops, selected_ball_idx=-1, selected_hoop_idx=-1,
+                       current_frame_balls=None, current_frame_hoops=None):
         """
         Log detailed frame processing data for analysis
-        
+
         Args:
             frame_count: Current frame number
-            all_balls: List of all detected balls (position, confidence, size)
-            all_hoops: List of all detected hoops (position, confidence, size)
+            all_balls: List of all ball trajectory points (historical data)
+            all_hoops: List of all hoop trajectory points (historical data)
             selected_ball_idx: Index of selected ball in all_balls (-1 if none)
             selected_hoop_idx: Index of selected hoop in all_hoops (-1 if none)
+            current_frame_balls: List of all balls detected by YOLO in current frame
+            current_frame_hoops: List of all hoops detected by YOLO in current frame
         """
         # Skip logging if no debug file is being created
         if not hasattr(self, '_debug_file'):
@@ -113,45 +116,53 @@ class ShotLogger:
             debug_filename = f"{video_name}_frame_log_{timestamp}.json"
             self._debug_file = open(debug_filename, 'w')
             self._debug_file.write('[')  # Start JSON array
+            self._first_frame_logged = False  # Track if first frame has been logged
         
         # Prepare frame data
         frame_data = {
             "frame": frame_count,
             "timestamp": frame_count / 30.0,  # Assuming 30fps
-            "ball_threshold": 0.4,  # Current ball confidence threshold
+            "ball_threshold": 0.2,  # Current ball confidence threshold
             "hoop_threshold": 0.6,  # Current hoop confidence threshold
-            "all_balls": [],
-            "all_hoops": [],
+            "trajectory_balls": [],  # Historical ball trajectory points
+            "trajectory_hoops": [],  # Historical hoop trajectory points
+            "current_detections": {  # All YOLO detections in current frame
+                "balls": current_frame_balls if current_frame_balls else [],
+                "hoops": current_frame_hoops if current_frame_hoops else []
+            },
             "selected_ball_idx": selected_ball_idx,
             "selected_hoop_idx": selected_hoop_idx,
             "selected_ball": all_balls[selected_ball_idx] if selected_ball_idx >= 0 else None,
             "selected_hoop": all_hoops[selected_hoop_idx] if selected_hoop_idx >= 0 else None
         }
         
-        # Add all detected balls
+        # Add all trajectory ball points (historical data)
         for i, ball in enumerate(all_balls):
-            frame_data["all_balls"].append({
+            frame_data["trajectory_balls"].append({
                 "index": i,
                 "position": ball[0],
+                "frame": ball[1],
                 "confidence": float(ball[4]),
                 "size": {"width": ball[2], "height": ball[3]},
-                "above_threshold": float(ball[4]) >= 0.4
+                "above_threshold": float(ball[4]) >= 0.2
             })
-        
-        # Add all detected hoops
+
+        # Add all trajectory hoop points (historical data)
         for i, hoop in enumerate(all_hoops):
-            frame_data["all_hoops"].append({
+            frame_data["trajectory_hoops"].append({
                 "index": i,
                 "position": hoop[0],
+                "frame": hoop[1],
                 "confidence": float(hoop[4]),
                 "size": {"width": hoop[2], "height": hoop[3]},
                 "above_threshold": float(hoop[4]) >= 0.6
             })
         
         # Write frame data to debug file
-        if frame_count > 0:
+        if self._first_frame_logged:
             self._debug_file.write(',\n')
         json.dump(frame_data, self._debug_file, indent=2)
+        self._first_frame_logged = True
         
     def save_debug_log(self, shot_log_path):
         """
@@ -311,6 +322,10 @@ class ShotDetector:
 
             results = self.model(self.frame, stream=True, device=self.device, verbose=False)
 
+            # Collect all detections in current frame for logging
+            current_frame_balls = []
+            current_frame_hoops = []
+
             for r in results:
                 boxes = r.boxes
                 for box in boxes:
@@ -328,15 +343,34 @@ class ShotDetector:
 
                     center = (int(x1 + w / 2), int(y1 + h / 2))
 
-                    # Only create ball points if high confidence or near hoop
-                    if (conf > .3 or (in_hoop_region(center, self.hoop_pos) and conf > 0.15)) and current_class == "Basketball":
-                        self.ball_pos.append((center, self.frame_count, w, h, conf))
-                        cvzone.cornerRect(self.frame, (x1, y1, w, h))
+                    # Collect all detections for current frame logging
+                    if current_class == "Basketball":
+                        current_frame_balls.append({
+                            "bbox": [x1, y1, x2, y2],
+                            "center": center,
+                            "size": {"width": w, "height": h},
+                            "confidence": float(conf),
+                            "class": current_class
+                        })
 
-                    # Create hoop points if high confidence
-                    if conf > .5 and current_class == "Basketball Hoop":
-                        self.hoop_pos.append((center, self.frame_count, w, h, conf))
-                        cvzone.cornerRect(self.frame, (x1, y1, w, h))
+                        # Only create ball points if reasonable confidence or near hoop
+                        if (conf > 0.3 or (in_hoop_region(center, self.hoop_pos) and conf > 0.15)):
+                            self.ball_pos.append((center, self.frame_count, w, h, conf))
+                            cvzone.cornerRect(self.frame, (x1, y1, w, h))
+
+                    elif current_class == "Basketball Hoop":
+                        current_frame_hoops.append({
+                            "bbox": [x1, y1, x2, y2],
+                            "center": center,
+                            "size": {"width": w, "height": h},
+                            "confidence": float(conf),
+                            "class": current_class
+                        })
+
+                        # Create hoop points if high confidence
+                        if conf > 0.5:
+                            self.hoop_pos.append((center, self.frame_count, w, h, conf))
+                            cvzone.cornerRect(self.frame, (x1, y1, w, h))
 
             self.clean_motion()
             self.shot_detection()
@@ -368,7 +402,9 @@ class ShotDetector:
                 all_balls,
                 all_hoops,
                 selected_ball_idx,
-                selected_hoop_idx
+                selected_hoop_idx,
+                current_frame_balls,
+                current_frame_hoops
             )
 
         progress_bar.close()
