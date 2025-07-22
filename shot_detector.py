@@ -94,6 +94,65 @@ class ShotLogger:
         
         return filename
         
+    def log_frame_data(self, frame_count, all_balls, all_hoops, selected_ball_idx=-1, selected_hoop_idx=-1):
+        """
+        Log detailed frame processing data for analysis
+        
+        Args:
+            frame_count: Current frame number
+            all_balls: List of all detected balls (position, confidence, size)
+            all_hoops: List of all detected hoops (position, confidence, size)
+            selected_ball_idx: Index of selected ball in all_balls (-1 if none)
+            selected_hoop_idx: Index of selected hoop in all_hoops (-1 if none)
+        """
+        # Skip logging if no debug file is being created
+        if not hasattr(self, '_debug_file'):
+            # Create debug log filename based on input video
+            video_name = self.input_video.split('/')[-1].split('.')[0]
+            timestamp = self.start_datetime.strftime('%Y%m%d_%H%M%S')
+            debug_filename = f"{video_name}_frame_log_{timestamp}.json"
+            self._debug_file = open(debug_filename, 'w')
+            self._debug_file.write('[')  # Start JSON array
+        
+        # Prepare frame data
+        frame_data = {
+            "frame": frame_count,
+            "timestamp": frame_count / 30.0,  # Assuming 30fps
+            "ball_threshold": 0.4,  # Current ball confidence threshold
+            "hoop_threshold": 0.6,  # Current hoop confidence threshold
+            "all_balls": [],
+            "all_hoops": [],
+            "selected_ball_idx": selected_ball_idx,
+            "selected_hoop_idx": selected_hoop_idx,
+            "selected_ball": all_balls[selected_ball_idx] if selected_ball_idx >= 0 else None,
+            "selected_hoop": all_hoops[selected_hoop_idx] if selected_hoop_idx >= 0 else None
+        }
+        
+        # Add all detected balls
+        for i, ball in enumerate(all_balls):
+            frame_data["all_balls"].append({
+                "index": i,
+                "position": ball[0],
+                "confidence": float(ball[4]),
+                "size": {"width": ball[2], "height": ball[3]},
+                "above_threshold": float(ball[4]) >= 0.4
+            })
+        
+        # Add all detected hoops
+        for i, hoop in enumerate(all_hoops):
+            frame_data["all_hoops"].append({
+                "index": i,
+                "position": hoop[0],
+                "confidence": float(hoop[4]),
+                "size": {"width": hoop[2], "height": hoop[3]},
+                "above_threshold": float(hoop[4]) >= 0.6
+            })
+        
+        # Write frame data to debug file
+        if frame_count > 0:
+            self._debug_file.write(',\n')
+        json.dump(frame_data, self._debug_file, indent=2)
+        
     def save_debug_log(self, shot_log_path):
         """
         Generate detailed debug log file
@@ -129,7 +188,7 @@ class ShotLogger:
             if "_debug_info" in shot:
                 # Convert any non-English strings in debug_info
                 debug_info = shot["_debug_info"]
-                
+            
                 # Replace success/failure reason with English versions
                 if "success_reason" in debug_info:
                     original_reason = debug_info["success_reason"]
@@ -138,7 +197,7 @@ class ShotLogger:
                     elif "篮筐区域" in original_reason:
                         debug_info["success_reason"] = "Ball passed through the hoop area"
                     # Add more translations as needed
-                
+        
                 if "failure_reason" in debug_info:
                     original_reason = debug_info["failure_reason"]
                     if "未通过篮筐" in original_reason:
@@ -148,8 +207,17 @@ class ShotLogger:
                     elif "置信度低" in original_reason:
                         debug_info["failure_reason"] = "Low confidence in ball detection"
                     # Add more translations as needed
-                
-                shot_info["debug_info"] = debug_info
+            
+                # Add ball and hoop tracking data if available
+                if "ball_tracking" in debug_info:
+                    shot_info["ball_tracking"] = debug_info["ball_tracking"]
+            
+                if "hoop_tracking" in debug_info:
+                    shot_info["hoop_tracking"] = debug_info["hoop_tracking"]
+            
+                # Add other debug info
+                shot_info["debug_info"] = {k: v for k, v in debug_info.items() 
+                                          if k not in ["ball_tracking", "hoop_tracking"]}
                 
                 # Add concise result reason
                 if shot["is_successful"] and "success_reason" in debug_info:
@@ -287,12 +355,33 @@ class ShotDetector:
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
 
+            # Log frame data after processing
+            all_balls = self.ball_pos if hasattr(self, 'ball_pos') else []
+            all_hoops = self.hoop_pos if hasattr(self, 'hoop_pos') else []
+            
+            # Determine selected indices (default to last detected if any)
+            selected_ball_idx = len(all_balls) - 1 if all_balls else -1
+            selected_hoop_idx = len(all_hoops) - 1 if all_hoops else -1
+            
+            self.logger.log_frame_data(
+                self.frame_count,
+                all_balls,
+                all_hoops,
+                selected_ball_idx,
+                selected_hoop_idx
+            )
+
         progress_bar.close()
         self.cap.release()
         if self.video_writer:
             self.video_writer.release()
         else:
             cv2.destroyAllWindows()
+        
+        # Close frame log file if it exists
+        if hasattr(self.logger, '_debug_file'):
+            self.logger._debug_file.write(']')  # Close JSON array
+            self.logger._debug_file.close()
         
         # Save shot log after processing completes
         log_filename = self.logger.save_log()
@@ -340,6 +429,28 @@ class ShotDetector:
                         'total_ball_positions': len(self.ball_pos),
                         'total_hoop_positions': len(self.hoop_pos)
                     }
+                    
+                    # Add detailed ball and hoop tracking data for each frame
+                    ball_tracking_data = []
+                    for pos in self.ball_pos:
+                        ball_tracking_data.append({
+                            'frame': pos[1],
+                            'position': {'x': pos[0][0], 'y': pos[0][1]},
+                            'size': {'width': pos[2], 'height': pos[3]},
+                            'confidence': float(pos[4])
+                        })
+                    
+                    hoop_tracking_data = []
+                    for pos in self.hoop_pos:
+                        hoop_tracking_data.append({
+                            'frame': pos[1],
+                            'position': {'x': pos[0][0], 'y': pos[0][1]},
+                            'size': {'width': pos[2], 'height': pos[3]},
+                            'confidence': float(pos[4])
+                        })
+                    
+                    debug_info['ball_tracking'] = ball_tracking_data
+                    debug_info['hoop_tracking'] = hoop_tracking_data
                     
                     # Check if it's a make or miss with debug info
                     is_successful = score(self.ball_pos, self.hoop_pos, debug_info)

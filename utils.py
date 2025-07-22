@@ -15,17 +15,17 @@ def get_device():
 
 def score(ball_pos, hoop_pos, debug_info=None):
     """
-    判断投篮是否成功，并收集调试信息
+    Determine if a shot is successful and collect debug information
     
     Args:
-        ball_pos: 球的位置轨迹
-        hoop_pos: 篮筐的位置
-        debug_info: 可选的字典，用于存储调试信息
+        ball_pos: Ball position trajectory
+        hoop_pos: Hoop position
+        debug_info: Optional dictionary for storing debug information
     
     Returns:
-        bool: 投篮是否成功
+        bool: Whether the shot was successful
     """
-    # 初始化调试信息字典
+    # Initialize debug information dictionary
     if debug_info is None:
         debug_info = {}
     
@@ -33,7 +33,7 @@ def score(ball_pos, hoop_pos, debug_info=None):
     y = []
     rim_height = hoop_pos[-1][0][1] - 0.5 * hoop_pos[-1][3]
     
-    # 记录篮筐信息
+    # Record hoop information
     debug_info['hoop_info'] = {
         'position': {'x': hoop_pos[-1][0][0], 'y': hoop_pos[-1][0][1]},
         'width': hoop_pos[-1][2],
@@ -41,7 +41,7 @@ def score(ball_pos, hoop_pos, debug_info=None):
         'rim_height': rim_height
     }
     
-    # 记录球的轨迹点
+    # Record ball trajectory points
     trajectory_points = []
     for i in range(len(ball_pos)):
         trajectory_points.append({
@@ -73,9 +73,9 @@ def score(ball_pos, hoop_pos, debug_info=None):
         'below_rim_point': below_point
     }
     
-    # 如果没有找到足够的点来创建轨迹线
+    # If not enough points found to create trajectory line
     if len(x) <= 1:
-        debug_info['failure_reason'] = "没有足够的轨迹点来判断投篮结果"
+        debug_info['failure_reason'] = "Not enough trajectory points to determine shot result"
         return False
 
     # Create line from two points
@@ -84,7 +84,7 @@ def score(ball_pos, hoop_pos, debug_info=None):
     rim_x1 = hoop_pos[-1][0][0] - 0.4 * hoop_pos[-1][2]
     rim_x2 = hoop_pos[-1][0][0] + 0.4 * hoop_pos[-1][2]
     
-    # 记录轨迹线和预测信息
+    # Record trajectory line and prediction information
     debug_info['trajectory_line'] = {
         'slope': float(m),
         'intercept': float(b),
@@ -98,7 +98,7 @@ def score(ball_pos, hoop_pos, debug_info=None):
         'rim_width': float(rim_x2 - rim_x1)
     }
 
-    # 记录篮筐反弹区域
+    # Record hoop rebound zone
     hoop_rebound_zone = 10  # Define a buffer zone around the hoop
     debug_info['rebound_zone'] = {
         'left_boundary': float(rim_x1 - hoop_rebound_zone),
@@ -121,17 +121,17 @@ def score(ball_pos, hoop_pos, debug_info=None):
     }
     
     if is_direct_hit:
-        debug_info['success_reason'] = "球直接穿过篮筐"
+        debug_info['success_reason'] = "Ball passes directly through the hoop"
         return True
     elif is_rebound_hit:
-        debug_info['success_reason'] = "球从篮筐边缘反弹进入"
+        debug_info['success_reason'] = "Ball rebounds from the rim edge and goes in"
         return True
     else:
         if predicted_x < rim_x1 - hoop_rebound_zone:
-            debug_info['failure_reason'] = "球从篮筐左侧错过"
+            debug_info['failure_reason'] = "Ball misses from the left side of the hoop"
             debug_info['miss_distance'] = float(rim_x1 - hoop_rebound_zone - predicted_x)
         else:  # predicted_x > rim_x2 + hoop_rebound_zone
-            debug_info['failure_reason'] = "球从篮筐右侧错过"
+            debug_info['failure_reason'] = "Ball misses from the right side of the hoop"
             debug_info['miss_distance'] = float(predicted_x - (rim_x2 + hoop_rebound_zone))
         
         return False
@@ -249,4 +249,4 @@ def clean_hoop_pos(hoop_pos):
     if len(hoop_pos) > 25:
         hoop_pos.pop(0)
 
-    return hoop_pos
+    return hoop_pos  
