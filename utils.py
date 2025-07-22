@@ -13,37 +13,128 @@ def get_device():
     return device
 
 
-def score(ball_pos, hoop_pos):
+def score(ball_pos, hoop_pos, debug_info=None):
+    """
+    判断投篮是否成功，并收集调试信息
+    
+    Args:
+        ball_pos: 球的位置轨迹
+        hoop_pos: 篮筐的位置
+        debug_info: 可选的字典，用于存储调试信息
+    
+    Returns:
+        bool: 投篮是否成功
+    """
+    # 初始化调试信息字典
+    if debug_info is None:
+        debug_info = {}
+    
     x = []
     y = []
     rim_height = hoop_pos[-1][0][1] - 0.5 * hoop_pos[-1][3]
+    
+    # 记录篮筐信息
+    debug_info['hoop_info'] = {
+        'position': {'x': hoop_pos[-1][0][0], 'y': hoop_pos[-1][0][1]},
+        'width': hoop_pos[-1][2],
+        'height': hoop_pos[-1][3],
+        'rim_height': rim_height
+    }
+    
+    # 记录球的轨迹点
+    trajectory_points = []
+    for i in range(len(ball_pos)):
+        trajectory_points.append({
+            'position': {'x': ball_pos[i][0][0], 'y': ball_pos[i][0][1]},
+            'frame': ball_pos[i][1],
+            'width': ball_pos[i][2],
+            'height': ball_pos[i][3],
+            'confidence': ball_pos[i][4] if len(ball_pos[i]) > 4 else None
+        })
+    debug_info['ball_trajectory'] = trajectory_points
 
     # Get first point above rim and first point below rim
+    above_point = None
+    below_point = None
+    
     for i in reversed(range(len(ball_pos))):
         if ball_pos[i][0][1] < rim_height:
             x.append(ball_pos[i][0][0])
             y.append(ball_pos[i][0][1])
+            above_point = {'x': ball_pos[i][0][0], 'y': ball_pos[i][0][1], 'frame': ball_pos[i][1]}
             if i + 1 < len(ball_pos):
                 x.append(ball_pos[i + 1][0][0])
                 y.append(ball_pos[i + 1][0][1])
+                below_point = {'x': ball_pos[i + 1][0][0], 'y': ball_pos[i + 1][0][1], 'frame': ball_pos[i + 1][1]}
             break
+    
+    debug_info['key_points'] = {
+        'above_rim_point': above_point,
+        'below_rim_point': below_point
+    }
+    
+    # 如果没有找到足够的点来创建轨迹线
+    if len(x) <= 1:
+        debug_info['failure_reason'] = "没有足够的轨迹点来判断投篮结果"
+        return False
 
     # Create line from two points
-    if len(x) > 1:
-        m, b = np.polyfit(x, y, 1)
-        predicted_x = ((hoop_pos[-1][0][1] - 0.5 * hoop_pos[-1][3]) - b) / m
-        rim_x1 = hoop_pos[-1][0][0] - 0.4 * hoop_pos[-1][2]
-        rim_x2 = hoop_pos[-1][0][0] + 0.4 * hoop_pos[-1][2]
+    m, b = np.polyfit(x, y, 1)
+    predicted_x = ((hoop_pos[-1][0][1] - 0.5 * hoop_pos[-1][3]) - b) / m
+    rim_x1 = hoop_pos[-1][0][0] - 0.4 * hoop_pos[-1][2]
+    rim_x2 = hoop_pos[-1][0][0] + 0.4 * hoop_pos[-1][2]
+    
+    # 记录轨迹线和预测信息
+    debug_info['trajectory_line'] = {
+        'slope': float(m),
+        'intercept': float(b),
+        'equation': f"y = {m:.4f}x + {b:.4f}"
+    }
+    
+    debug_info['prediction'] = {
+        'predicted_x_at_rim': float(predicted_x),
+        'rim_x1': float(rim_x1),
+        'rim_x2': float(rim_x2),
+        'rim_width': float(rim_x2 - rim_x1)
+    }
 
-        # Check if predicted path crosses the rim area (including rebound zone)
-        if rim_x1 < predicted_x < rim_x2:
-            return True
-        # Check if ball enters rebound zone near the hoop
-        hoop_rebound_zone = 10  # Define a buffer zone around the hoop
-        if rim_x1 - hoop_rebound_zone < predicted_x < rim_x2 + hoop_rebound_zone:
-            return True
+    # 记录篮筐反弹区域
+    hoop_rebound_zone = 10  # Define a buffer zone around the hoop
+    debug_info['rebound_zone'] = {
+        'left_boundary': float(rim_x1 - hoop_rebound_zone),
+        'right_boundary': float(rim_x2 + hoop_rebound_zone),
+        'zone_width': float(hoop_rebound_zone)
+    }
 
-    return False
+    # Check if predicted path crosses the rim area
+    is_direct_hit = bool(rim_x1 < predicted_x < rim_x2)
+    
+    # Check if ball enters rebound zone near the hoop
+    is_rebound_hit = bool((rim_x1 - hoop_rebound_zone < predicted_x < rim_x1) or (rim_x2 < predicted_x < rim_x2 + hoop_rebound_zone))
+    
+    debug_info['shot_analysis'] = {
+        'is_direct_hit': bool(is_direct_hit),
+        'is_rebound_hit': bool(is_rebound_hit),
+        'horizontal_distance_from_center': float(predicted_x - hoop_pos[-1][0][0]),
+        'horizontal_distance_from_left_rim': float(predicted_x - rim_x1),
+        'horizontal_distance_from_right_rim': float(rim_x2 - predicted_x)
+    }
+    
+    if is_direct_hit:
+        debug_info['success_reason'] = "球直接穿过篮筐"
+        return True
+    elif is_rebound_hit:
+        debug_info['success_reason'] = "球从篮筐边缘反弹进入"
+        return True
+    else:
+        if predicted_x < rim_x1 - hoop_rebound_zone:
+            debug_info['failure_reason'] = "球从篮筐左侧错过"
+            debug_info['miss_distance'] = float(rim_x1 - hoop_rebound_zone - predicted_x)
+        else:  # predicted_x > rim_x2 + hoop_rebound_zone
+            debug_info['failure_reason'] = "球从篮筐右侧错过"
+            debug_info['miss_distance'] = float(predicted_x - (rim_x2 + hoop_rebound_zone))
+        
+        return False
 
 
 # Detects if the ball is below the net - used to detect shot attempts

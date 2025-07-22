@@ -12,45 +12,178 @@ from utils import score, detect_down, detect_up, in_hoop_region, clean_hoop_pos,
 from datetime import datetime
 
 class ShotLogger:
-    def __init__(self):
+    def __init__(self, input_video="video_test_5.mp4", ball_threshold=0.5):
         self.shots = []
         self.start_time = time.time()
+        self.start_datetime = datetime.now()
         self.frame_count = 0
         self.success_count = 0
+        self.total_attempts = 0
         self.progress = 0
+        self.input_video = input_video
+        self.ball_threshold = ball_threshold
         
-    def log_shot(self, frame_idx, timestamp, ball_pos, hoop_pos, threshold):
-        self.success_count += 1
-        self.shots.append({
+    def log_shot(self, frame_idx, timestamp, ball_pos, hoop_pos, ball_confidence, is_successful, debug_info=None):
+        """
+        Record shot information, with minimal data in shot log and detailed info in debug log
+        
+        Args:
+            frame_idx: Frame index
+            timestamp: Timestamp
+            ball_pos: Ball position
+            hoop_pos: Hoop position
+            ball_confidence: Ball confidence
+            is_successful: Whether the shot was successful
+            debug_info: Debug information dictionary
+        """
+        if is_successful:
+            self.success_count += 1
+        self.total_attempts += 1
+        
+        # Store only essential information in shot log
+        shot_data = {
             "frame_index": frame_idx,
             "timestamp": timestamp,
-            "ball_position": ball_pos,
-            "hoop_position": hoop_pos,
-            "threshold": threshold
-        })
+            "is_successful": is_successful,
+            "debug_log_id": self.total_attempts  # Reference to debug log
+        }
+        
+        # Store the debug info separately for debug log
+        if debug_info:
+            shot_data["_debug_info"] = debug_info  # Temporary storage, won't be included in final shot log
+            shot_data["_ball_position"] = ball_pos  # Temporary storage
+            shot_data["_hoop_position"] = hoop_pos  # Temporary storage
+            shot_data["_ball_confidence"] = ball_confidence  # Temporary storage
+            
+        self.shots.append(shot_data)
     
     def update_progress(self, current, total):
         self.progress = (current / total) * 100
         
-    def save_log(self, filename="shot_log.json"):
+    def save_log(self, filename=None):
+        if filename is None:
+            # Extract filename from input video path (without extension)
+            video_name = self.input_video.split('/')[-1]
+            video_name = video_name.split('.')[0]
+            # Generate log filename with video name and start time
+            timestamp = self.start_datetime.strftime('%Y%m%d_%H%M%S')
+            filename = f"{video_name}_shot_log_{timestamp}.json"
+        
+        # Create a clean copy of shots without debug info
+        clean_shots = []
+        for shot in self.shots:
+            clean_shot = {k: v for k, v in shot.items() if not k.startswith('_')}
+            clean_shots.append(clean_shot)
+        
         stats = {
+            "input_video": self.input_video,
             "processing_start": datetime.fromtimestamp(self.start_time).strftime('%Y-%m-%d %H:%M:%S'),
             "total_frames": self.frame_count,
+            "total_attempts": self.total_attempts,
             "successful_shots": self.success_count,
-            "processing_time_seconds": time.time() - self.start_time,
-            "shots": self.shots
+            "success_rate": round(self.success_count / self.total_attempts * 100, 2) if self.total_attempts > 0 else 0,
+            "processing_time_seconds": round(time.time() - self.start_time, 2),
+            "ball_threshold": self.ball_threshold,
+            "shots": clean_shots
         }
         with open(filename, 'w') as f:
             json.dump(stats, f, indent=2)
+        
+        # Generate detailed debug log
+        self.save_debug_log(filename)
+        
+        return filename
+        
+    def save_debug_log(self, shot_log_path):
+        """
+        Generate detailed debug log file
+        
+        Args:
+            shot_log_path: Path to the original shot log
+        """
+        # Create debug log filename
+        debug_log_path = shot_log_path.replace('_shot_log_', '_debug_log_')
+        
+        # Extract detailed debug information for each shot
+        debug_shots = []
+        for i, shot in enumerate(self.shots):
+            shot_num = i + 1
+            
+            # Start with basic shot information
+            shot_info = {
+                "shot_number": shot_num,
+                "frame_index": shot["frame_index"],
+                "timestamp": shot["timestamp"],
+                "is_successful": shot["is_successful"]
+            }
+            
+            # Add ball position and confidence if available
+            if "_ball_position" in shot:
+                shot_info["ball_position"] = shot["_ball_position"]
+            if "_ball_confidence" in shot:
+                shot_info["ball_confidence"] = shot["_ball_confidence"]
+            if "_hoop_position" in shot:
+                shot_info["hoop_position"] = shot["_hoop_position"]
+            
+            # Add all debug information
+            if "_debug_info" in shot:
+                # Convert any non-English strings in debug_info
+                debug_info = shot["_debug_info"]
+                
+                # Replace success/failure reason with English versions
+                if "success_reason" in debug_info:
+                    original_reason = debug_info["success_reason"]
+                    if "篮筐中心" in original_reason:
+                        debug_info["success_reason"] = "Ball passed through the center of the hoop"
+                    elif "篮筐区域" in original_reason:
+                        debug_info["success_reason"] = "Ball passed through the hoop area"
+                    # Add more translations as needed
+                
+                if "failure_reason" in debug_info:
+                    original_reason = debug_info["failure_reason"]
+                    if "未通过篮筐" in original_reason:
+                        debug_info["failure_reason"] = "Ball did not pass through the hoop"
+                    elif "未检测到球" in original_reason:
+                        debug_info["failure_reason"] = "Ball was not detected"
+                    elif "置信度低" in original_reason:
+                        debug_info["failure_reason"] = "Low confidence in ball detection"
+                    # Add more translations as needed
+                
+                shot_info["debug_info"] = debug_info
+                
+                # Add concise result reason
+                if shot["is_successful"] and "success_reason" in debug_info:
+                    shot_info["result_reason"] = debug_info["success_reason"]
+                elif not shot["is_successful"] and "failure_reason" in debug_info:
+                    shot_info["result_reason"] = debug_info["failure_reason"]
+            
+            debug_shots.append(shot_info)
+        
+        # Create debug log data
+        debug_data = {
+            "video": self.input_video,
+            "total_shots": self.total_attempts,
+            "successful_shots": self.success_count,
+            "shooting_accuracy": float(self.success_count / self.total_attempts * 100) if self.total_attempts > 0 else 0.0,
+            "detailed_shots": debug_shots
+        }
+        
+        # Save debug log
+        with open(debug_log_path, 'w') as f:
+            json.dump(debug_data, f, indent=2)
+        
+        print(f"Detailed debug log saved to {debug_log_path}")
+        return debug_log_path
 
 class ShotDetector:
-    def __init__(self, output_video=None):
+    def __init__(self, input_video="video_test_5.mp4", output_video=None):
         # Load the YOLO model created from main.py - change text to your relative path
         self.overlay_text = "Waiting..."
         self.model = YOLO("best.pt")
         self.output_video = output_video
         self.video_writer = None
-        self.logger = ShotLogger()
+        self.input_video = input_video
+        self.logger = ShotLogger(input_video=input_video, ball_threshold=0.5)
         
         # Uncomment this line to accelerate inference. Note that this may cause errors in some setups.
         #self.model.half()
@@ -60,8 +193,8 @@ class ShotDetector:
         # Uncomment line below to use webcam (I streamed to my iPhone using Iriun Webcam)
         # self.cap = cv2.VideoCapture(0)
 
-        # Use video - replace text with your video path
-        self.cap = cv2.VideoCapture("video_test_5.mp4")
+        # Use video from input parameter
+        self.cap = cv2.VideoCapture(input_video)
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
         self.ball_pos = []  # array of tuples ((x_pos, y_pos), frame count, width, height, conf)
@@ -162,7 +295,8 @@ class ShotDetector:
             cv2.destroyAllWindows()
         
         # Save shot log after processing completes
-        self.logger.save_log()
+        log_filename = self.logger.save_log()
+        print(f"\nShot log saved to: {log_filename}")
 
     def clean_motion(self):
         # Clean and display ball motion
@@ -195,21 +329,38 @@ class ShotDetector:
                     self.up = False
                     self.down = False
 
-                    # If it is a make, put a green overlay and display "完美"
-                    if score(self.ball_pos, self.hoop_pos):
+                    # Create debug info dictionary
+                    debug_info = {}
+                    
+                    # Add more context information to debug dictionary
+                    debug_info['shot_context'] = {
+                        'up_frame': self.up_frame,
+                        'down_frame': self.down_frame,
+                        'frames_between_up_down': self.down_frame - self.up_frame,
+                        'total_ball_positions': len(self.ball_pos),
+                        'total_hoop_positions': len(self.hoop_pos)
+                    }
+                    
+                    # Check if it's a make or miss with debug info
+                    is_successful = score(self.ball_pos, self.hoop_pos, debug_info)
+                    timestamp = self.frame_count / 30  # assuming 30fps
+                    
+                    # Log shot (both makes and misses) with debug info
+                    self.logger.log_shot(
+                        frame_idx=self.frame_count,
+                        timestamp=timestamp,
+                        ball_pos=self.ball_pos[-1][0],
+                        hoop_pos=self.hoop_pos[-1][0],
+                        ball_confidence=self.ball_pos[-1][4],  # Use actual ball confidence
+                        is_successful=is_successful,
+                        debug_info=debug_info
+                    )
+                    
+                    if is_successful:
                         self.makes += 1
                         self.overlay_color = (0, 255, 0)  # Green for make
                         self.overlay_text = "Make"
                         self.fade_counter = self.fade_frames
-                        # Log successful shot
-                        timestamp = self.frame_count / 30  # assuming 30fps
-                        self.logger.log_shot(
-                            frame_idx=self.frame_count,
-                            timestamp=timestamp,
-                            ball_pos=self.ball_pos[-1][0],
-                            hoop_pos=self.hoop_pos[-1][0],
-                            threshold=0.5  # default threshold
-                        )
                     else:
                         self.overlay_color = (255, 0, 0)  # Red for miss
                         self.overlay_text = "Miss"
@@ -242,7 +393,8 @@ class ShotDetector:
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Basketball Shot Detector')
+    parser.add_argument('--input', type=str, default='video_test_5.mp4', help='Input video file path')
     parser.add_argument('--output', type=str, help='Output video file path')
     args = parser.parse_args()
     
-    ShotDetector(output_video=args.output)
+    ShotDetector(input_video=args.input, output_video=args.output)
