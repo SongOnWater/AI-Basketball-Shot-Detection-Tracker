@@ -1,3 +1,4 @@
+
 # Avi Shah - Basketball Shot Detector/Tracker - July 2023
 
 from ultralytics import YOLO
@@ -219,16 +220,8 @@ class ShotLogger:
                         debug_info["failure_reason"] = "Low confidence in ball detection"
                     # Add more translations as needed
             
-                # Add ball and hoop tracking data if available
-                if "ball_tracking" in debug_info:
-                    shot_info["ball_tracking"] = debug_info["ball_tracking"]
-            
-                if "hoop_tracking" in debug_info:
-                    shot_info["hoop_tracking"] = debug_info["hoop_tracking"]
-            
-                # Add other debug info
-                shot_info["debug_info"] = {k: v for k, v in debug_info.items() 
-                                          if k not in ["ball_tracking", "hoop_tracking"]}
+                # Add other debug info (ball_tracking and hoop_tracking removed)
+                shot_info["debug_info"] = debug_info
                 
                 # Add concise result reason
                 if shot["is_successful"] and "success_reason" in debug_info:
@@ -292,7 +285,11 @@ class ShotDetector:
 
         if hasattr(self.hoop_model, 'names'):
             self.hoop_model_classes = self.hoop_model.names
+            # Filter and show only hoop-related classes that will be used for detection
+            hoop_classes = [cls for cls in self.hoop_model_classes.values()
+                           if 'hoop' in cls.lower() or cls.lower() == 'basketball hoop']
             print(f"📋 Hoop model classes: {list(self.hoop_model_classes.values())}")
+            print(f"🎯 Active hoop detection classes: {hoop_classes}")
         else:
             self.hoop_model_classes = {0: "Basketball", 1: "Basketball Hoop"}
         self.device = get_device()
@@ -389,9 +386,9 @@ class ShotDetector:
                             })
 
                             # Only create ball points if reasonable confidence or near hoop
-                            if (conf > 0.3 or (in_hoop_region(center, self.hoop_pos) and conf > 0.15)):
+                            if (conf > 0.4 or (in_hoop_region(center, self.hoop_pos) and conf > 0.2)):
                                 self.ball_pos.append((center, self.frame_count, w, h, conf))
-                                cvzone.cornerRect(self.frame, (x1, y1, w, h))
+                                cvzone.cornerRect(self.frame, (x1, y1, w, h), colorC=(255, 0, 0), t=3)
 
             # Process hoop detections from custom model
             for r in hoop_results:
@@ -417,7 +414,8 @@ class ShotDetector:
 
                         # Check if this is a basketball hoop
                         is_hoop = (current_class in ["Basketball Hoop", "hoop"] or
-                                  "hoop" in current_class.lower() or "basket" in current_class.lower())
+                                  "hoop" in current_class.lower() or
+                                  (current_class.lower() == "basketball hoop"))
 
                         if is_hoop:
                             current_frame_hoops.append({
@@ -431,7 +429,7 @@ class ShotDetector:
                             # Create hoop points if high confidence
                             if conf > 0.5:
                                 self.hoop_pos.append((center, self.frame_count, w, h, conf))
-                                cvzone.cornerRect(self.frame, (x1, y1, w, h))
+                                cvzone.cornerRect(self.frame, (x1, y1, w, h), colorC=(0, 255, 255), t=3)
 
             self.clean_motion()
             self.shot_detection()
@@ -530,27 +528,8 @@ class ShotDetector:
                         'total_hoop_positions': len(self.hoop_pos)
                     }
                     
-                    # Add detailed ball and hoop tracking data for each frame
-                    ball_tracking_data = []
-                    for pos in self.ball_pos:
-                        ball_tracking_data.append({
-                            'frame': pos[1],
-                            'position': {'x': pos[0][0], 'y': pos[0][1]},
-                            'size': {'width': pos[2], 'height': pos[3]},
-                            'confidence': float(pos[4])
-                        })
-                    
-                    hoop_tracking_data = []
-                    for pos in self.hoop_pos:
-                        hoop_tracking_data.append({
-                            'frame': pos[1],
-                            'position': {'x': pos[0][0], 'y': pos[0][1]},
-                            'size': {'width': pos[2], 'height': pos[3]},
-                            'confidence': float(pos[4])
-                        })
-                    
-                    debug_info['ball_tracking'] = ball_tracking_data
-                    debug_info['hoop_tracking'] = hoop_tracking_data
+                    # Note: ball_tracking and hoop_tracking removed to reduce log size
+                    # ball_trajectory in utils.py score() function provides sufficient trajectory data
                     
                     # Check if it's a make or miss with debug info
                     is_successful = score(self.ball_pos, self.hoop_pos, debug_info)
