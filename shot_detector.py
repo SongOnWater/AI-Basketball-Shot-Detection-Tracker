@@ -69,30 +69,40 @@ class ShotLogger:
             # Generate log filename with video name and start time
             timestamp = self.start_datetime.strftime('%Y%m%d_%H%M%S')
             filename = f"{video_name}_shot_log_{timestamp}.json"
-        
-        # Create a clean copy of shots without debug info
-        clean_shots = []
+
+        # Separate successful and failed shots (every 10-frame detection attempt is recorded)
+        # This includes both valid shot attempts and failed detection attempts
+        successful_shots = []
+        failed_shots = []
+
         for shot in self.shots:
+            # Create clean copy without debug info starting with '_'
             clean_shot = {k: v for k, v in shot.items() if not k.startswith('_')}
-            clean_shots.append(clean_shot)
-        
+
+            if shot.get('is_successful', False):
+                successful_shots.append(clean_shot)
+            else:
+                failed_shots.append(clean_shot)
+
         stats = {
             "input_video": self.input_video,
             "processing_start": datetime.fromtimestamp(self.start_time).strftime('%Y-%m-%d %H:%M:%S'),
             "total_frames": self.frame_count,
             "total_attempts": self.total_attempts,
-            "successful_shots": self.success_count,
-            "success_rate": round(self.success_count / self.total_attempts * 100, 2) if self.total_attempts > 0 else 0,
+            "successful_shots_count": len(successful_shots),
+            "failed_shots_count": len(failed_shots),
+            "success_rate": round(len(successful_shots) / self.total_attempts * 100, 2) if self.total_attempts > 0 else 0,
             "processing_time_seconds": round(time.time() - self.start_time, 2),
             "ball_threshold": self.ball_threshold,
-            "shots": clean_shots
+            "successful_shots": successful_shots,
+            "failed_shots": failed_shots
         }
         with open(filename, 'w') as f:
             json.dump(stats, f, indent=2)
-        
+
         # Generate detailed debug log
         self.save_debug_log(filename)
-        
+
         return filename
         
     def log_frame_data(self, frame_count, all_balls, all_hoops, selected_ball_idx=-1, selected_hoop_idx=-1,
@@ -123,8 +133,8 @@ class ShotLogger:
         frame_data = {
             "frame": frame_count,
             "timestamp": frame_count / 30.0,  # Assuming 30fps
-            "ball_threshold": 0.2,  # Current ball confidence threshold
-            "hoop_threshold": 0.6,  # Current hoop confidence threshold
+            "ball_threshold": 0.4,  # Current ball confidence threshold
+            "hoop_threshold": 0.4,  # Current hoop confidence threshold
             "trajectory_balls": [],  # Historical ball trajectory points
             "trajectory_hoops": [],  # Historical hoop trajectory points
             "current_detections": {  # All YOLO detections in current frame
@@ -427,7 +437,7 @@ class ShotDetector:
                             })
 
                             # Create hoop points if high confidence
-                            if conf > 0.5:
+                            if conf > 0.4:
                                 self.hoop_pos.append((center, self.frame_count, w, h, conf))
                                 cvzone.cornerRect(self.frame, (x1, y1, w, h), colorC=(0, 255, 255), t=3)
 
@@ -509,33 +519,63 @@ class ShotDetector:
                 if self.down:
                     self.down_frame = self.ball_pos[-1][1]
 
-            # If ball goes from 'up' area to 'down' area in that order, increase attempt and reset
+            # Check for shot detection every 10 frames to avoid duplicate detections
+            # This ensures each shot attempt is recorded only once
             if self.frame_count % 10 == 0:
-                if self.up and self.down and self.up_frame < self.down_frame:
-                    self.attempts += 1
-                    self.up = False
-                    self.down = False
-
+                # Check if we have enough data to analyze a potential shot
+                if len(self.ball_pos) > 0 and len(self.hoop_pos) > 0:
                     # Create debug info dictionary
                     debug_info = {}
-                    
-                    # Add more context information to debug dictionary
-                    debug_info['shot_context'] = {
-                        'up_frame': self.up_frame,
-                        'down_frame': self.down_frame,
-                        'frames_between_up_down': self.down_frame - self.up_frame,
-                        'total_ball_positions': len(self.ball_pos),
-                        'total_hoop_positions': len(self.hoop_pos)
-                    }
-                    
-                    # Note: ball_tracking and hoop_tracking removed to reduce log size
-                    # ball_trajectory in utils.py score() function provides sufficient trajectory data
-                    
-                    # Check if it's a make or miss with debug info
-                    is_successful = score(self.ball_pos, self.hoop_pos, debug_info)
+
+                    # Check if this is a valid shot attempt (UP→DOWN sequence)
+                    is_valid_shot_attempt = (self.up and self.down and self.up_frame < self.down_frame)
+
+                    if is_valid_shot_attempt:
+                        # Valid shot attempt - analyze trajectory
+                        self.attempts += 1
+                        self.up = False
+                        self.down = False
+
+                        # Add shot context information
+                        debug_info['shot_context'] = {
+                            'up_frame': self.up_frame,
+                            'down_frame': self.down_frame,
+                            'frames_between_up_down': self.down_frame - self.up_frame,
+                            'total_ball_positions': len(self.ball_pos),
+                            'total_hoop_positions': len(self.hoop_pos),
+                            'detection_type': 'valid_shot_attempt'
+                        }
+
+                        # Check if it's a make or miss with debug info
+                        is_successful = score(self.ball_pos, self.hoop_pos, debug_info)
+
+                    else:
+                        # Not a valid shot attempt - record as failed detection
+                        debug_info['shot_context'] = {
+                            'up_frame': self.up_frame if hasattr(self, 'up_frame') else None,
+                            'down_frame': self.down_frame if hasattr(self, 'down_frame') else None,
+                            'up_detected': self.up,
+                            'down_detected': self.down,
+                            'total_ball_positions': len(self.ball_pos),
+                            'total_hoop_positions': len(self.hoop_pos),
+                            'detection_type': 'invalid_shot_attempt'
+                        }
+
+                        # Determine failure reason
+                        if not self.up and not self.down:
+                            debug_info['failure_reason'] = "No UP or DOWN movement detected"
+                        elif not self.up:
+                            debug_info['failure_reason'] = "No UP movement detected (ball didn't enter UP zone)"
+                        elif not self.down:
+                            debug_info['failure_reason'] = "No DOWN movement detected (ball didn't enter DOWN zone)"
+                        elif self.up_frame >= self.down_frame:
+                            debug_info['failure_reason'] = "Invalid sequence: DOWN detected before UP"
+
+                        is_successful = False
+
                     timestamp = self.frame_count / 30  # assuming 30fps
-                    
-                    # Log shot (both makes and misses) with debug info
+
+                    # Log every detection attempt (both valid shots and failed detections) every 10 frames
                     self.logger.log_shot(
                         frame_idx=self.frame_count,
                         timestamp=timestamp,
@@ -545,7 +585,7 @@ class ShotDetector:
                         is_successful=is_successful,
                         debug_info=debug_info
                     )
-                    
+
                     if is_successful:
                         self.makes += 1
                         self.overlay_color = (0, 255, 0)  # Green for make
@@ -582,14 +622,34 @@ class ShotDetector:
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description='Basketball Shot Detector')
+    from model_configs import get_model_config, list_all_configs
+
+    parser = argparse.ArgumentParser(description='Basketball Shot Detector with Enhanced Model Support')
     parser.add_argument('--input', type=str, default='video_test_5.mp4', help='Input video file path')
     parser.add_argument('--output', type=str, help='Output video file path')
     parser.add_argument('--ball-model', type=str, default='yolov8m.pt', help='Ball detection model (default: yolov8m.pt)')
     parser.add_argument('--hoop-model', type=str, default='best.pt', help='Hoop detection model (default: best.pt)')
+    parser.add_argument('--config', type=str, help='Use predefined model configuration (e.g., high_accuracy, balanced, real_time)')
+    parser.add_argument('--list-models', action='store_true', help='List all available model configurations')
     args = parser.parse_args()
 
+    # List models if requested
+    if args.list_models:
+        list_all_configs()
+        exit(0)
+
+    # Use config if specified
+    ball_model = args.ball_model
+    if args.config:
+        config = get_model_config(args.config)
+        if config:
+            ball_model = config['ball_model']
+            print(f"🎯 Using configuration '{args.config}': {config['description']}")
+            print(f"📋 Ball model: {ball_model}")
+        else:
+            print("❌ Invalid configuration. Use --list-models to see available options.")
+            exit(1)
+
     # Create detector with dual models
-    detector = ShotDetector(args.input, args.output, args.ball_model, args.hoop_model)
+    detector = ShotDetector(args.input, args.output, ball_model, args.hoop_model)
     detector.run()
-    ShotDetector(input_video=args.input, output_video=args.output)

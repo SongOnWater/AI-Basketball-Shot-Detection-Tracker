@@ -81,8 +81,9 @@ def score(ball_pos, hoop_pos, debug_info=None):
     # Create line from two points
     m, b = np.polyfit(x, y, 1)
     predicted_x = ((hoop_pos[-1][0][1] - 0.5 * hoop_pos[-1][3]) - b) / m
-    rim_x1 = hoop_pos[-1][0][0] - 0.4 * hoop_pos[-1][2]
-    rim_x2 = hoop_pos[-1][0][0] + 0.4 * hoop_pos[-1][2]
+    # Use smaller rim area for stricter judgment (0.3 instead of 0.4)
+    rim_x1 = hoop_pos[-1][0][0] - 0.3 * hoop_pos[-1][2]
+    rim_x2 = hoop_pos[-1][0][0] + 0.3 * hoop_pos[-1][2]
     
     # Record trajectory line and prediction information
     debug_info['trajectory_line'] = {
@@ -98,8 +99,8 @@ def score(ball_pos, hoop_pos, debug_info=None):
         'rim_width': float(rim_x2 - rim_x1)
     }
 
-    # Record hoop rebound zone
-    hoop_rebound_zone = 10  # Define a buffer zone around the hoop
+    # Record hoop rebound zone (reduced for more accurate detection)
+    hoop_rebound_zone = 5  # Define a smaller buffer zone around the hoop for stricter judgment
     debug_info['rebound_zone'] = {
         'left_boundary': float(rim_x1 - hoop_rebound_zone),
         'right_boundary': float(rim_x2 + hoop_rebound_zone),
