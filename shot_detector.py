@@ -23,11 +23,16 @@ class ShotLogger:
         self.progress = 0
         self.input_video = input_video
         self.ball_threshold = ball_threshold
+
+        # 改进的三类投篮记录
+        self.successful_shots = []           # 成功投篮
+        self.detected_failed_shots = []      # 识别到投篮但失败
+        self.undetected_attempts = []        # 未检测到投篮
         
     def log_shot(self, frame_idx, timestamp, ball_pos, hoop_pos, ball_confidence, is_successful, debug_info=None):
         """
-        Record shot information, with minimal data in shot log and detailed info in debug log
-        
+        Record shot information with improved classification
+
         Args:
             frame_idx: Frame index
             timestamp: Timestamp
@@ -40,23 +45,49 @@ class ShotLogger:
         if is_successful:
             self.success_count += 1
         self.total_attempts += 1
-        
-        # Store only essential information in shot log
+
+        # 创建完整的投篮数据
         shot_data = {
             "frame_index": frame_idx,
             "timestamp": timestamp,
-            "is_successful": is_successful,
-            "debug_log_id": self.total_attempts  # Reference to debug log
+            "ball_position": ball_pos,
+            "ball_confidence": ball_confidence,
+            "hoop_position": hoop_pos,
+            "debug_info": debug_info if debug_info else {}
         }
-        
-        # Store the debug info separately for debug log
-        if debug_info:
-            shot_data["_debug_info"] = debug_info  # Temporary storage, won't be included in final shot log
-            shot_data["_ball_position"] = ball_pos  # Temporary storage
-            shot_data["_hoop_position"] = hoop_pos  # Temporary storage
-            shot_data["_ball_confidence"] = ball_confidence  # Temporary storage
-            
-        self.shots.append(shot_data)
+
+        # 根据debug_info中的detection_type进行分类
+        detection_type = debug_info.get('shot_context', {}).get('detection_type', 'unknown') if debug_info else 'unknown'
+
+        if is_successful:
+            # 成功投篮
+            shot_data["result_category"] = "successful"
+            shot_data["is_successful"] = True
+            self.successful_shots.append(shot_data)
+
+        elif detection_type == "valid_shot_attempt":
+            # 识别到UP→DOWN轨迹但失败
+            shot_data["result_category"] = "detected_failed"
+            shot_data["is_successful"] = False
+            self.detected_failed_shots.append(shot_data)
+
+        else:
+            # 未检测到UP→DOWN轨迹
+            shot_data["result_category"] = "undetected_attempt"
+            shot_data["is_successful"] = False
+            self.undetected_attempts.append(shot_data)
+
+        # 保持向后兼容性
+        legacy_shot_data = {
+            "frame_index": frame_idx,
+            "timestamp": timestamp,
+            "is_successful": is_successful,
+            "_debug_info": debug_info,
+            "_ball_position": ball_pos,
+            "_hoop_position": hoop_pos,
+            "_ball_confidence": ball_confidence
+        }
+        self.shots.append(legacy_shot_data)
     
     def update_progress(self, current, total):
         self.progress = (current / total) * 100
@@ -70,43 +101,146 @@ class ShotLogger:
             timestamp = self.start_datetime.strftime('%Y%m%d_%H%M%S')
             filename = f"{video_name}_shot_log_{timestamp}.json"
 
-        # Separate successful and failed shots (every 10-frame detection attempt is recorded)
-        # This includes both valid shot attempts and failed detection attempts
-        successful_shots = []
-        failed_shots = []
+        # 生成改进的投篮日志
+        processing_time = time.time() - self.start_time
 
-        for shot in self.shots:
-            # Create clean copy without debug info starting with '_'
-            clean_shot = {k: v for k, v in shot.items() if not k.startswith('_')}
+        # 计算统计数据
+        total_attempts = len(self.successful_shots) + len(self.detected_failed_shots) + len(self.undetected_attempts)
+        successful_count = len(self.successful_shots)
+        detected_failed_count = len(self.detected_failed_shots)
+        undetected_count = len(self.undetected_attempts)
 
-            if shot.get('is_successful', False):
-                successful_shots.append(clean_shot)
-            else:
-                failed_shots.append(clean_shot)
+        # 计算各种成功率
+        overall_success_rate = (successful_count / total_attempts * 100) if total_attempts > 0 else 0
+        valid_attempts = successful_count + detected_failed_count
+        shooting_accuracy = (successful_count / valid_attempts * 100) if valid_attempts > 0 else 0
+        detection_accuracy = (valid_attempts / total_attempts * 100) if total_attempts > 0 else 0
 
-        stats = {
+        # 分析失败原因
+        failure_analysis = self._analyze_failures()
+
+        improved_log = {
             "input_video": self.input_video,
-            "processing_start": datetime.fromtimestamp(self.start_time).strftime('%Y-%m-%d %H:%M:%S'),
+            "processing_start": self.start_datetime.strftime("%Y-%m-%d %H:%M:%S"),
+            "processing_time_seconds": round(processing_time, 2),
             "total_frames": self.frame_count,
-            "total_attempts": self.total_attempts,
-            "successful_shots_count": len(successful_shots),
-            "failed_shots_count": len(failed_shots),
-            "success_rate": round(len(successful_shots) / self.total_attempts * 100, 2) if self.total_attempts > 0 else 0,
-            "processing_time_seconds": round(time.time() - self.start_time, 2),
             "ball_threshold": self.ball_threshold,
-            "successful_shots": successful_shots,
-            "failed_shots": failed_shots
-        }
-        with open(filename, 'w') as f:
-            json.dump(stats, f, indent=2)
 
-        # Generate detailed debug log
-        self.save_debug_log(filename)
+            # 总体统计
+            "summary": {
+                "total_attempts": total_attempts,
+                "successful_shots_count": successful_count,
+                "detected_failed_shots_count": detected_failed_count,
+                "undetected_attempts_count": undetected_count,
+
+                # 各种成功率
+                "overall_success_rate": round(overall_success_rate, 2),
+                "shooting_accuracy": round(shooting_accuracy, 2),  # 在有效投篮中的成功率
+                "detection_accuracy": round(detection_accuracy, 2),  # 投篮检测准确率
+            },
+
+            # 分类详情
+            "shot_categories": {
+                "successful_shots": {
+                    "count": successful_count,
+                    "description": "成功投篮 - 检测到UP→DOWN轨迹且球进筐",
+                    "shots": self.successful_shots
+                },
+                "detected_failed_shots": {
+                    "count": detected_failed_count,
+                    "description": "识别到UP→DOWN轨迹但失败 - 球未进筐",
+                    "shots": self.detected_failed_shots
+                },
+                "undetected_attempts": {
+                    "count": undetected_count,
+                    "description": "未检测到UP→DOWN轨迹 - 不符合投篮模式",
+                    "shots": self.undetected_attempts
+                }
+            },
+
+            # 失败原因分析
+            "failure_analysis": failure_analysis
+        }
+
+        # 保存改进的日志
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(improved_log, f, indent=2, ensure_ascii=False)
 
         return filename
-        
-    def log_frame_data(self, frame_count, all_balls, all_hoops, selected_ball_idx=-1, selected_hoop_idx=-1,
-                       current_frame_balls=None, current_frame_hoops=None):
+
+    def _analyze_failures(self):
+        """分析失败原因"""
+        failure_reasons = {}
+
+        # 分析检测到的失败投篮
+        for shot in self.detected_failed_shots:
+            reason = shot.get('debug_info', {}).get('failure_reason', 'Unknown')
+            if reason not in failure_reasons:
+                failure_reasons[reason] = {"detected_failed": 0, "undetected": 0}
+            failure_reasons[reason]["detected_failed"] += 1
+
+        # 分析未检测到的投篮
+        for shot in self.undetected_attempts:
+            reason = shot.get('debug_info', {}).get('failure_reason', 'Unknown')
+            if reason not in failure_reasons:
+                failure_reasons[reason] = {"detected_failed": 0, "undetected": 0}
+            failure_reasons[reason]["undetected"] += 1
+
+        return failure_reasons
+
+
+
+    def print_improved_summary(self):
+        """打印改进的摘要"""
+        total_attempts = len(self.successful_shots) + len(self.detected_failed_shots) + len(self.undetected_attempts)
+        successful_count = len(self.successful_shots)
+        detected_failed_count = len(self.detected_failed_shots)
+        undetected_count = len(self.undetected_attempts)
+
+        # 计算各种成功率
+        overall_success_rate = (successful_count / total_attempts * 100) if total_attempts > 0 else 0
+        valid_attempts = successful_count + detected_failed_count
+        shooting_accuracy = (successful_count / valid_attempts * 100) if valid_attempts > 0 else 0
+        detection_accuracy = (valid_attempts / total_attempts * 100) if total_attempts > 0 else 0
+
+        print("\n" + "="*60)
+        print("📊 改进的投篮检测报告")
+        print("="*60)
+
+        print(f"🎥 视频: {self.input_video}")
+        print(f"⏱️  处理时间: {time.time() - self.start_time:.2f}秒")
+        print(f"🎯 球检测阈值: {self.ball_threshold}")
+
+        print(f"\n📈 总体统计:")
+        print(f"  总尝试次数: {total_attempts}")
+        print(f"  成功投篮: {successful_count}")
+        print(f"  识别到但失败: {detected_failed_count}")
+        print(f"  未检测到: {undetected_count}")
+
+        print(f"\n🎯 成功率分析:")
+        print(f"  总体成功率: {overall_success_rate:.1f}%")
+        print(f"  投篮准确率: {shooting_accuracy:.1f}% (在有效投篮中)")
+        print(f"  检测准确率: {detection_accuracy:.1f}% (正确识别投篮)")
+
+        print(f"\n📋 分类详情:")
+        print(f"  成功投篮 - 检测到UP→DOWN轨迹且球进筐: {successful_count}次")
+        print(f"  识别到UP→DOWN轨迹但失败 - 球未进筐: {detected_failed_count}次")
+        print(f"  未检测到UP→DOWN轨迹 - 不符合投篮模式: {undetected_count}次")
+
+        # 显示失败原因
+        failure_analysis = self._analyze_failures()
+        if failure_analysis:
+            print(f"\n❌ 失败原因分析:")
+            for reason, counts in failure_analysis.items():
+                total = counts["detected_failed"] + counts["undetected"]
+                print(f"  {reason}: {total}次")
+                if counts["detected_failed"] > 0:
+                    print(f"    - 识别到但失败: {counts['detected_failed']}次")
+                if counts["undetected"] > 0:
+                    print(f"    - 未检测到: {counts['undetected']}次")
+
+    def log_frame_data(self, frame_count, all_balls, all_hoops, all_persons=None, selected_ball_idx=-1, selected_hoop_idx=-1, selected_person_idx=-1,
+                       current_frame_balls=None, current_frame_hoops=None, current_frame_persons=None):
         """
         Log detailed frame processing data for analysis
 
@@ -114,39 +248,47 @@ class ShotLogger:
             frame_count: Current frame number
             all_balls: List of all ball trajectory points (historical data)
             all_hoops: List of all hoop trajectory points (historical data)
+            all_persons: List of all person trajectory points (historical data)
             selected_ball_idx: Index of selected ball in all_balls (-1 if none)
             selected_hoop_idx: Index of selected hoop in all_hoops (-1 if none)
+            selected_person_idx: Index of selected person in all_persons (-1 if none)
             current_frame_balls: List of all balls detected by YOLO in current frame
             current_frame_hoops: List of all hoops detected by YOLO in current frame
+            current_frame_persons: List of all persons detected by YOLO in current frame
         """
         # Skip logging if no debug file is being created
-        if not hasattr(self, '_debug_file'):
-            # Create debug log filename based on input video
+        if not hasattr(self, '_frame_log_file'):
+            # Create frame log filename based on input video
             video_name = self.input_video.split('/')[-1].split('.')[0]
             timestamp = self.start_datetime.strftime('%Y%m%d_%H%M%S')
-            debug_filename = f"{video_name}_frame_log_{timestamp}.json"
-            self._debug_file = open(debug_filename, 'w')
-            self._debug_file.write('[')  # Start JSON array
+            frame_log_filename = f"{video_name}_frame_log_{timestamp}.json"
+            self._frame_log_file = open(frame_log_filename, 'w')
+            self._frame_log_file.write('[')  # Start JSON array
             self._first_frame_logged = False  # Track if first frame has been logged
-        
+
         # Prepare frame data
         frame_data = {
             "frame": frame_count,
             "timestamp": frame_count / 30.0,  # Assuming 30fps
             "ball_threshold": 0.4,  # Current ball confidence threshold
             "hoop_threshold": 0.4,  # Current hoop confidence threshold
+            "person_threshold": 0.3,  # Current person confidence threshold
             "trajectory_balls": [],  # Historical ball trajectory points
             "trajectory_hoops": [],  # Historical hoop trajectory points
+            "trajectory_persons": [],  # Historical person trajectory points
             "current_detections": {  # All YOLO detections in current frame
                 "balls": current_frame_balls if current_frame_balls else [],
-                "hoops": current_frame_hoops if current_frame_hoops else []
+                "hoops": current_frame_hoops if current_frame_hoops else [],
+                "persons": current_frame_persons if current_frame_persons else []
             },
             "selected_ball_idx": selected_ball_idx,
             "selected_hoop_idx": selected_hoop_idx,
+            "selected_person_idx": selected_person_idx,
             "selected_ball": all_balls[selected_ball_idx] if selected_ball_idx >= 0 else None,
-            "selected_hoop": all_hoops[selected_hoop_idx] if selected_hoop_idx >= 0 else None
+            "selected_hoop": all_hoops[selected_hoop_idx] if selected_hoop_idx >= 0 else None,
+            "selected_person": all_persons[selected_person_idx] if all_persons and selected_person_idx >= 0 else None
         }
-        
+
         # Add all trajectory ball points (historical data)
         for i, ball in enumerate(all_balls):
             frame_data["trajectory_balls"].append({
@@ -166,111 +308,57 @@ class ShotLogger:
                 "frame": hoop[1],
                 "confidence": float(hoop[4]),
                 "size": {"width": hoop[2], "height": hoop[3]},
-                "above_threshold": float(hoop[4]) >= 0.6
+                "above_threshold": float(hoop[4]) >= 0.4
             })
-        
-        # Write frame data to debug file
+
+        # Add all trajectory person points (historical data)
+        if all_persons:
+            for i, person in enumerate(all_persons):
+                frame_data["trajectory_persons"].append({
+                    "index": i,
+                    "position": person[0],
+                    "frame": person[1],
+                    "confidence": float(person[4]),
+                    "size": {"width": person[2], "height": person[3]},
+                    "above_threshold": float(person[4]) >= 0.3
+                })
+
+        # Write frame data to frame log file
         if self._first_frame_logged:
-            self._debug_file.write(',\n')
-        json.dump(frame_data, self._debug_file, indent=2)
+            self._frame_log_file.write(',\n')
+        json.dump(frame_data, self._frame_log_file, indent=2)
         self._first_frame_logged = True
+
+
         
-    def save_debug_log(self, shot_log_path):
-        """
-        Generate detailed debug log file
-        
-        Args:
-            shot_log_path: Path to the original shot log
-        """
-        # Create debug log filename
-        debug_log_path = shot_log_path.replace('_shot_log_', '_debug_log_')
-        
-        # Extract detailed debug information for each shot
-        debug_shots = []
-        for i, shot in enumerate(self.shots):
-            shot_num = i + 1
-            
-            # Start with basic shot information
-            shot_info = {
-                "shot_number": shot_num,
-                "frame_index": shot["frame_index"],
-                "timestamp": shot["timestamp"],
-                "is_successful": shot["is_successful"]
-            }
-            
-            # Add ball position and confidence if available
-            if "_ball_position" in shot:
-                shot_info["ball_position"] = shot["_ball_position"]
-            if "_ball_confidence" in shot:
-                shot_info["ball_confidence"] = shot["_ball_confidence"]
-            if "_hoop_position" in shot:
-                shot_info["hoop_position"] = shot["_hoop_position"]
-            
-            # Add all debug information
-            if "_debug_info" in shot:
-                # Convert any non-English strings in debug_info
-                debug_info = shot["_debug_info"]
-            
-                # Replace success/failure reason with English versions
-                if "success_reason" in debug_info:
-                    original_reason = debug_info["success_reason"]
-                    if "篮筐中心" in original_reason:
-                        debug_info["success_reason"] = "Ball passed through the center of the hoop"
-                    elif "篮筐区域" in original_reason:
-                        debug_info["success_reason"] = "Ball passed through the hoop area"
-                    # Add more translations as needed
-        
-                if "failure_reason" in debug_info:
-                    original_reason = debug_info["failure_reason"]
-                    if "未通过篮筐" in original_reason:
-                        debug_info["failure_reason"] = "Ball did not pass through the hoop"
-                    elif "未检测到球" in original_reason:
-                        debug_info["failure_reason"] = "Ball was not detected"
-                    elif "置信度低" in original_reason:
-                        debug_info["failure_reason"] = "Low confidence in ball detection"
-                    # Add more translations as needed
-            
-                # Add other debug info (ball_tracking and hoop_tracking removed)
-                shot_info["debug_info"] = debug_info
-                
-                # Add concise result reason
-                if shot["is_successful"] and "success_reason" in debug_info:
-                    shot_info["result_reason"] = debug_info["success_reason"]
-                elif not shot["is_successful"] and "failure_reason" in debug_info:
-                    shot_info["result_reason"] = debug_info["failure_reason"]
-            
-            debug_shots.append(shot_info)
-        
-        # Create debug log data
-        debug_data = {
-            "video": self.input_video,
-            "total_shots": self.total_attempts,
-            "successful_shots": self.success_count,
-            "shooting_accuracy": float(self.success_count / self.total_attempts * 100) if self.total_attempts > 0 else 0.0,
-            "detailed_shots": debug_shots
-        }
-        
-        # Save debug log
-        with open(debug_log_path, 'w') as f:
-            json.dump(debug_data, f, indent=2)
-        
-        print(f"Detailed debug log saved to {debug_log_path}")
-        return debug_log_path
+
 
 class ShotDetector:
-    def __init__(self, input_video="video_test_5.mp4", output_video=None, ball_model_path="yolov8m.pt", hoop_model_path="best.pt"):
-        # Load dual models for optimal detection
+    def __init__(self, input_video="video_test_5.mp4", output_video=None, ball_model_path="yolov8m.pt", hoop_model_path="best.pt", person_model_path=None, use_shared_model=True, min_ball_area=400):
+        # Load models for optimal detection
         self.overlay_text = "Waiting..."
+        self.use_shared_model = use_shared_model
 
-        # Load ball detection model (YOLOv8m for sports ball)
+        # Load main detection model (YOLOv8m for sports ball and person)
         self.ball_model_path = ball_model_path
         self.ball_model = YOLO(ball_model_path)
-        print(f"🏀 Loaded ball model: {ball_model_path}")
+        print(f"🏀 Loaded main model: {ball_model_path}")
 
         # Load hoop detection model (custom trained model)
         self.hoop_model_path = hoop_model_path
         self.hoop_model = YOLO(hoop_model_path)
         print(f"🏀 Loaded hoop model: {hoop_model_path}")
+
+        # Person detection: use shared model or separate model
+        if use_shared_model:
+            self.person_model = self.ball_model  # Share the same model
+            self.person_model_path = ball_model_path
+            print(f"👤 Using shared model for person detection: {ball_model_path}")
+        else:
+            # Use separate person model if specified
+            self.person_model_path = person_model_path or "yolov8n.pt"
+            self.person_model = YOLO(self.person_model_path)
+            print(f"👤 Loaded separate person model: {self.person_model_path}")
 
         # For backward compatibility, set primary model as ball model
         self.model = self.ball_model
@@ -302,6 +390,16 @@ class ShotDetector:
             print(f"🎯 Active hoop detection classes: {hoop_classes}")
         else:
             self.hoop_model_classes = {0: "Basketball", 1: "Basketball Hoop"}
+
+        if hasattr(self.person_model, 'names'):
+            self.person_model_classes = self.person_model.names
+            # Filter and show only person-related classes
+            person_classes = [cls for cls in self.person_model_classes.values()
+                             if 'person' in cls.lower()]
+            print(f"📋 Person model classes: {len(self.person_model_classes)} classes")
+            print(f"👤 Active person detection classes: {person_classes}")
+        else:
+            self.person_model_classes = {0: "person"}
         self.device = get_device()
         # Uncomment line below to use webcam (I streamed to my iPhone using Iriun Webcam)
         # self.cap = cv2.VideoCapture(0)
@@ -312,6 +410,7 @@ class ShotDetector:
 
         self.ball_pos = []  # array of tuples ((x_pos, y_pos), frame count, width, height, conf)
         self.hoop_pos = []  # array of tuples ((x_pos, y_pos), frame count, width, height, conf)
+        self.person_pos = []  # array of tuples ((x_pos, y_pos), frame count, width, height, conf)
 
         self.frame_count = 0
         self.frame = None
@@ -329,6 +428,101 @@ class ShotDetector:
         self.fade_frames = 20
         self.fade_counter = 0
         self.overlay_color = (0, 0, 0)
+
+        # Ball filtering parameters
+        self.min_ball_area = min_ball_area  # Minimum ball area in pixels (width * height)
+
+    def filter_overlapping_persons(self, person_detections):
+        """
+        Filter overlapping person detections, keeping the one with larger height (full body)
+
+        Args:
+            person_detections: List of person detection dictionaries
+
+        Returns:
+            List of filtered person detections
+        """
+        if len(person_detections) <= 1:
+            return person_detections
+
+        filtered = []
+        used_indices = set()
+
+        for i, detection1 in enumerate(person_detections):
+            if i in used_indices:
+                continue
+
+            # Check for overlaps with other detections
+            overlapping_detections = [detection1]
+            overlapping_indices = [i]
+
+            for j, detection2 in enumerate(person_detections):
+                if i != j and j not in used_indices:
+                    # Calculate overlap with improved algorithm
+                    if self.calculate_person_overlap(detection1, detection2) > 0.2:  # 20% overlap threshold (lowered)
+                        overlapping_detections.append(detection2)
+                        overlapping_indices.append(j)
+
+            # If there are overlapping detections, choose the best one
+            if len(overlapping_detections) > 1:
+                # Prefer detection with larger height (more likely to be full body)
+                # Also consider confidence as secondary factor
+                best_detection = max(overlapping_detections,
+                                   key=lambda d: (d["size"]["height"], d["confidence"]))
+                filtered.append(best_detection)
+
+                # Mark all overlapping indices as used
+                used_indices.update(overlapping_indices)
+            else:
+                # No overlap, keep the detection
+                filtered.append(detection1)
+                used_indices.add(i)
+
+        return filtered
+
+    def calculate_person_overlap(self, detection1, detection2):
+        """
+        Calculate overlap ratio between two person detections using improved logic
+
+        Args:
+            detection1, detection2: Person detection dictionaries with bbox
+
+        Returns:
+            float: Overlap ratio (0-1)
+        """
+        bbox1 = detection1["bbox"]  # [x1, y1, x2, y2]
+        bbox2 = detection2["bbox"]
+        center1 = detection1["center"]
+        center2 = detection2["center"]
+
+        # Calculate intersection
+        x1 = max(bbox1[0], bbox2[0])
+        y1 = max(bbox1[1], bbox2[1])
+        x2 = min(bbox1[2], bbox2[2])
+        y2 = min(bbox1[3], bbox2[3])
+
+        if x2 <= x1 or y2 <= y1:
+            return 0.0  # No overlap
+
+        intersection_area = (x2 - x1) * (y2 - y1)
+
+        # Calculate areas
+        area1 = (bbox1[2] - bbox1[0]) * (bbox1[3] - bbox1[1])
+        area2 = (bbox2[2] - bbox2[0]) * (bbox2[3] - bbox2[1])
+
+        # Use intersection over smaller area (more sensitive to partial overlaps)
+        smaller_area = min(area1, area2)
+        overlap_ratio = intersection_area / smaller_area if smaller_area > 0 else 0.0
+
+        # Additional check: if centers are close and one bbox contains significant part of the other
+        center_distance = ((center1[0] - center2[0])**2 + (center1[1] - center2[1])**2)**0.5
+        avg_width = (detection1["size"]["width"] + detection2["size"]["width"]) / 2
+
+        # If centers are close (within average width) and there's any overlap, consider them overlapping
+        if center_distance < avg_width and overlap_ratio > 0.1:
+            return max(overlap_ratio, 0.5)  # Boost overlap score for close detections
+
+        return overlap_ratio
 
     def run(self):
         # Initialize video writer if output path is provided
@@ -352,16 +546,24 @@ class ShotDetector:
                     self.video_writer.release()
                 break
 
-            # Run dual model detection
-            ball_results = self.ball_model(self.frame, stream=True, device=self.device, verbose=False)
-            hoop_results = self.hoop_model(self.frame, stream=True, device=self.device, verbose=False)
+            # Run detection models
+            if self.use_shared_model:
+                # Use shared model for both ball and person detection
+                main_results = self.ball_model(self.frame, stream=True, device=self.device, verbose=False)
+                hoop_results = self.hoop_model(self.frame, stream=True, device=self.device, verbose=False)
+            else:
+                # Use separate models
+                main_results = self.ball_model(self.frame, stream=True, device=self.device, verbose=False)
+                hoop_results = self.hoop_model(self.frame, stream=True, device=self.device, verbose=False)
+                person_results = self.person_model(self.frame, stream=True, device=self.device, verbose=False)
 
             # Collect all detections in current frame for logging
             current_frame_balls = []
             current_frame_hoops = []
+            current_frame_persons = []
 
-            # Process ball detections from YOLOv8m (sports ball)
-            for r in ball_results:
+            # Process main model detections (ball and person if shared model)
+            for r in main_results:
                 boxes = r.boxes
                 if boxes is not None:
                     for box in boxes:
@@ -386,19 +588,41 @@ class ShotDetector:
                         is_ball = (current_class in ["Basketball", "sports ball"] or
                                   "ball" in current_class.lower())
 
+                        # Check if this is a person (when using shared model)
+                        is_person = (current_class.lower() == "person")
+
                         if is_ball:
+                            # Calculate ball area for size filtering
+                            ball_area = w * h
+
                             current_frame_balls.append({
+                                "bbox": [x1, y1, x2, y2],
+                                "center": center,
+                                "size": {"width": w, "height": h},
+                                "confidence": float(conf),
+                                "class": current_class,
+                                "area": ball_area
+                            })
+
+                            # Filter out balls smaller than minimum area and apply confidence/region checks
+                            if ball_area >= self.min_ball_area and (conf > 0.2 or (in_hoop_region(center, self.hoop_pos) and conf > 0.1)):
+                                self.ball_pos.append((center, self.frame_count, w, h, conf))
+                                cvzone.cornerRect(self.frame, (x1, y1, w, h), colorC=(255, 0, 0), t=3)
+                            elif ball_area < self.min_ball_area:
+                                # Draw filtered out balls in gray for debugging
+                                cvzone.cornerRect(self.frame, (x1, y1, w, h), colorC=(128, 128, 128), t=1)
+                                cvzone.putTextRect(self.frame, f'Small Ball {ball_area}px', (x1, y1-10),
+                                                 scale=0.6, thickness=1, colorR=(128, 128, 128))
+
+                        elif is_person and self.use_shared_model and conf > 0.3:
+                            # Process person detection from shared model
+                            current_frame_persons.append({
                                 "bbox": [x1, y1, x2, y2],
                                 "center": center,
                                 "size": {"width": w, "height": h},
                                 "confidence": float(conf),
                                 "class": current_class
                             })
-
-                            # Only create ball points if reasonable confidence or near hoop
-                            if (conf > 0.4 or (in_hoop_region(center, self.hoop_pos) and conf > 0.2)):
-                                self.ball_pos.append((center, self.frame_count, w, h, conf))
-                                cvzone.cornerRect(self.frame, (x1, y1, w, h), colorC=(255, 0, 0), t=3)
 
             # Process hoop detections from custom model
             for r in hoop_results:
@@ -441,6 +665,73 @@ class ShotDetector:
                                 self.hoop_pos.append((center, self.frame_count, w, h, conf))
                                 cvzone.cornerRect(self.frame, (x1, y1, w, h), colorC=(0, 255, 255), t=3)
 
+            # Process person detections with overlap filtering
+            raw_person_detections = []
+
+            # If using separate person model, process its results
+            if not self.use_shared_model:
+                for r in person_results:
+                    boxes = r.boxes
+                if boxes is not None:
+                    for box in boxes:
+                        # Bounding box
+                        x1, y1, x2, y2 = box.xyxy[0]
+                        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                        w, h = x2 - x1, y2 - y1
+
+                        # Confidence
+                        conf = math.ceil((box.conf[0] * 100)) / 100
+
+                        # Class Name from person model
+                        cls = int(box.cls[0])
+                        if cls < len(self.person_model_classes):
+                            current_class = self.person_model_classes[cls]
+                        else:
+                            current_class = f"Unknown_{cls}"
+
+                        center = (int(x1 + w / 2), int(y1 + h / 2))
+
+                        # Check if this is a person
+                        is_person = (current_class.lower() == "person")
+
+                        if is_person and not self.use_shared_model and conf > 0.3:
+                            # Only add to raw_person_detections if using separate model
+                            raw_person_detections.append({
+                                "bbox": [x1, y1, x2, y2],
+                                "center": center,
+                                "size": {"width": w, "height": h},
+                                "confidence": float(conf),
+                                "class": current_class
+                            })
+
+            # If using shared model, person detections are already in current_frame_persons
+            # If using separate model, add the raw detections to the list
+            if not self.use_shared_model:
+                # Filter overlapping detections - prefer full body (larger height)
+                filtered_person_detections = self.filter_overlapping_persons(raw_person_detections)
+                current_frame_persons.extend(filtered_person_detections)
+            else:
+                # For shared model, filter the detections already collected
+                filtered_person_detections = self.filter_overlapping_persons(current_frame_persons)
+                current_frame_persons = filtered_person_detections
+
+            # Add filtered detections to trajectory and draw them
+            for person_detection in current_frame_persons:
+
+                # Add to trajectory
+                center = person_detection["center"]
+                w = person_detection["size"]["width"]
+                h = person_detection["size"]["height"]
+                conf = person_detection["confidence"]
+
+                self.person_pos.append((center, self.frame_count, w, h, conf))
+
+                # Draw bounding box and label
+                x1, y1, x2, y2 = person_detection["bbox"]
+                cvzone.cornerRect(self.frame, (x1, y1, x2-x1, y2-y1), colorC=(0, 255, 0), t=2)
+                cvzone.putTextRect(self.frame, f'Person {conf:.2f}', (x1, y1-10),
+                                 scale=0.8, thickness=1, colorR=(0, 255, 0))
+
             self.clean_motion()
             self.shot_detection()
             self.display_score()
@@ -461,19 +752,24 @@ class ShotDetector:
             # Log frame data after processing
             all_balls = self.ball_pos if hasattr(self, 'ball_pos') else []
             all_hoops = self.hoop_pos if hasattr(self, 'hoop_pos') else []
-            
+            all_persons = self.person_pos if hasattr(self, 'person_pos') else []
+
             # Determine selected indices (default to last detected if any)
             selected_ball_idx = len(all_balls) - 1 if all_balls else -1
             selected_hoop_idx = len(all_hoops) - 1 if all_hoops else -1
-            
+            selected_person_idx = len(all_persons) - 1 if all_persons else -1
+
             self.logger.log_frame_data(
                 self.frame_count,
                 all_balls,
                 all_hoops,
+                all_persons,
                 selected_ball_idx,
                 selected_hoop_idx,
+                selected_person_idx,
                 current_frame_balls,
-                current_frame_hoops
+                current_frame_hoops,
+                current_frame_persons
             )
 
         progress_bar.close()
@@ -482,18 +778,21 @@ class ShotDetector:
             self.video_writer.release()
         else:
             cv2.destroyAllWindows()
-        
+
         # Close frame log file if it exists and is still open
-        if hasattr(self.logger, '_debug_file') and self.logger._debug_file and not self.logger._debug_file.closed:
+        if hasattr(self.logger, '_frame_log_file') and self.logger._frame_log_file and not self.logger._frame_log_file.closed:
             try:
-                self.logger._debug_file.write(']')  # Close JSON array
-                self.logger._debug_file.close()
+                self.logger._frame_log_file.write(']')  # Close JSON array
+                self.logger._frame_log_file.close()
             except (ValueError, AttributeError) as e:
-                print(f"Warning: Could not close debug file properly: {e}")
-        
+                print(f"Warning: Could not close frame log file properly: {e}")
+
         # Save shot log after processing completes
         log_filename = self.logger.save_log()
-        print(f"\nShot log saved to: {log_filename}")
+        print(f"\n✅ 投篮日志已保存到: {log_filename}")
+
+        # 打印改进的摘要
+        self.logger.print_improved_summary()
 
     def clean_motion(self):
         # Clean and display ball motion
