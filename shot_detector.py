@@ -334,10 +334,11 @@ class ShotLogger:
 
 
 class ShotDetector:
-    def __init__(self, input_video="video_test_5.mp4", output_video=None, ball_model_path="yolov8m.pt", hoop_model_path="best.pt", person_model_path=None, use_shared_model=True, min_ball_area=400):
+    def __init__(self, input_video="video_test_5.mp4", output_video=None, ball_model_path="yolov8m.pt", hoop_model_path="best.pt", person_model_path=None, use_shared_model=True, min_ball_area=400, enable_person_detection=False):
         # Load models for optimal detection
         self.overlay_text = "Waiting..."
         self.use_shared_model = use_shared_model
+        self.enable_person_detection = enable_person_detection
 
         # Load main detection model (YOLOv8m for sports ball and person)
         self.ball_model_path = ball_model_path
@@ -349,16 +350,21 @@ class ShotDetector:
         self.hoop_model = YOLO(hoop_model_path)
         print(f"🏀 Loaded hoop model: {hoop_model_path}")
 
-        # Person detection: use shared model or separate model
-        if use_shared_model:
-            self.person_model = self.ball_model  # Share the same model
-            self.person_model_path = ball_model_path
-            print(f"👤 Using shared model for person detection: {ball_model_path}")
+        # Person detection: only load if enabled
+        if enable_person_detection:
+            if use_shared_model:
+                self.person_model = self.ball_model  # Share the same model
+                self.person_model_path = ball_model_path
+                print(f"👤 Using shared model for person detection: {ball_model_path}")
+            else:
+                # Use separate person model if specified
+                self.person_model_path = person_model_path or "yolov8n.pt"
+                self.person_model = YOLO(self.person_model_path)
+                print(f"👤 Loaded separate person model: {self.person_model_path}")
         else:
-            # Use separate person model if specified
-            self.person_model_path = person_model_path or "yolov8n.pt"
-            self.person_model = YOLO(self.person_model_path)
-            print(f"👤 Loaded separate person model: {self.person_model_path}")
+            self.person_model = None
+            self.person_model_path = None
+            print(f"👤 Person detection disabled")
 
         # For backward compatibility, set primary model as ball model
         self.model = self.ball_model
@@ -614,8 +620,8 @@ class ShotDetector:
                                 cvzone.putTextRect(self.frame, f'Small Ball {ball_area}px', (x1, y1-10),
                                                  scale=0.6, thickness=1, colorR=(128, 128, 128))
 
-                        elif is_person and self.use_shared_model and conf > 0.3:
-                            # Process person detection from shared model
+                        elif is_person and self.enable_person_detection and self.use_shared_model and conf > 0.3:
+                            # Process person detection from shared model (only if enabled)
                             current_frame_persons.append({
                                 "bbox": [x1, y1, x2, y2],
                                 "center": center,
@@ -694,8 +700,8 @@ class ShotDetector:
                         # Check if this is a person
                         is_person = (current_class.lower() == "person")
 
-                        if is_person and not self.use_shared_model and conf > 0.3:
-                            # Only add to raw_person_detections if using separate model
+                        if is_person and self.enable_person_detection and not self.use_shared_model and conf > 0.3:
+                            # Only add to raw_person_detections if using separate model and person detection is enabled
                             raw_person_detections.append({
                                 "bbox": [x1, y1, x2, y2],
                                 "center": center,
@@ -704,33 +710,35 @@ class ShotDetector:
                                 "class": current_class
                             })
 
-            # If using shared model, person detections are already in current_frame_persons
-            # If using separate model, add the raw detections to the list
-            if not self.use_shared_model:
-                # Filter overlapping detections - prefer full body (larger height)
-                filtered_person_detections = self.filter_overlapping_persons(raw_person_detections)
-                current_frame_persons.extend(filtered_person_detections)
-            else:
-                # For shared model, filter the detections already collected
-                filtered_person_detections = self.filter_overlapping_persons(current_frame_persons)
-                current_frame_persons = filtered_person_detections
+            # Process person detections only if enabled
+            if self.enable_person_detection:
+                # If using shared model, person detections are already in current_frame_persons
+                # If using separate model, add the raw detections to the list
+                if not self.use_shared_model:
+                    # Filter overlapping detections - prefer full body (larger height)
+                    filtered_person_detections = self.filter_overlapping_persons(raw_person_detections)
+                    current_frame_persons.extend(filtered_person_detections)
+                else:
+                    # For shared model, filter the detections already collected
+                    filtered_person_detections = self.filter_overlapping_persons(current_frame_persons)
+                    current_frame_persons = filtered_person_detections
 
-            # Add filtered detections to trajectory and draw them
-            for person_detection in current_frame_persons:
+                # Add filtered detections to trajectory and draw them
+                for person_detection in current_frame_persons:
 
-                # Add to trajectory
-                center = person_detection["center"]
-                w = person_detection["size"]["width"]
-                h = person_detection["size"]["height"]
-                conf = person_detection["confidence"]
+                    # Add to trajectory
+                    center = person_detection["center"]
+                    w = person_detection["size"]["width"]
+                    h = person_detection["size"]["height"]
+                    conf = person_detection["confidence"]
 
-                self.person_pos.append((center, self.frame_count, w, h, conf))
+                    self.person_pos.append((center, self.frame_count, w, h, conf))
 
-                # Draw bounding box and label
-                x1, y1, x2, y2 = person_detection["bbox"]
-                cvzone.cornerRect(self.frame, (x1, y1, x2-x1, y2-y1), colorC=(0, 255, 0), t=2)
-                cvzone.putTextRect(self.frame, f'Person {conf:.2f}', (x1, y1-10),
-                                 scale=0.8, thickness=1, colorR=(0, 255, 0))
+                    # Draw bounding box and label
+                    x1, y1, x2, y2 = person_detection["bbox"]
+                    cvzone.cornerRect(self.frame, (x1, y1, x2-x1, y2-y1), colorC=(0, 255, 0), t=2)
+                    cvzone.putTextRect(self.frame, f'Person {conf:.2f}', (x1, y1-10),
+                                     scale=0.8, thickness=1, colorR=(0, 255, 0))
 
             self.clean_motion()
             self.shot_detection()
@@ -752,24 +760,28 @@ class ShotDetector:
             # Log frame data after processing
             all_balls = self.ball_pos if hasattr(self, 'ball_pos') else []
             all_hoops = self.hoop_pos if hasattr(self, 'hoop_pos') else []
-            all_persons = self.person_pos if hasattr(self, 'person_pos') else []
+            all_persons = self.person_pos if hasattr(self, 'person_pos') and self.enable_person_detection else []
 
             # Determine selected indices (default to last detected if any)
             selected_ball_idx = len(all_balls) - 1 if all_balls else -1
             selected_hoop_idx = len(all_hoops) - 1 if all_hoops else -1
             selected_person_idx = len(all_persons) - 1 if all_persons else -1
 
+            # Only pass person data if person detection is enabled
+            persons_data = all_persons if self.enable_person_detection else []
+            current_persons_data = current_frame_persons if self.enable_person_detection else []
+
             self.logger.log_frame_data(
                 self.frame_count,
                 all_balls,
                 all_hoops,
-                all_persons,
+                persons_data,
                 selected_ball_idx,
                 selected_hoop_idx,
                 selected_person_idx,
                 current_frame_balls,
                 current_frame_hoops,
-                current_frame_persons
+                current_persons_data
             )
 
         progress_bar.close()
@@ -803,6 +815,9 @@ class ShotDetector:
         # Clean hoop motion and display current hoop center
         if len(self.hoop_pos) > 1:
             self.hoop_pos = clean_hoop_pos(self.hoop_pos)
+
+        # Draw hoop center if hoop positions exist
+        if len(self.hoop_pos) > 0:
             cv2.circle(self.frame, self.hoop_pos[-1][0], 2, (128, 128, 0), 2)
 
     def shot_detection(self):
@@ -884,6 +899,13 @@ class ShotDetector:
                         is_successful=is_successful,
                         debug_info=debug_info
                     )
+
+                    # Clear trajectory data after shot analysis is complete
+                    # This prevents data contamination between different shots
+                    self.ball_pos = []
+                    self.hoop_pos = []
+                    if self.enable_person_detection:
+                        self.person_pos = []
 
                     if is_successful:
                         self.makes += 1
