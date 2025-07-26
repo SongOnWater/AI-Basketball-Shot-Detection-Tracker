@@ -1552,7 +1552,7 @@ if __name__ == "__main__":
     parser.add_argument('--input', type=str, default='video_test_5.mp4', help='Input video file path')
     parser.add_argument('--output', type=str, help='Output video file path')
     parser.add_argument('--ball-model', type=str, default='Yolo-Weights/yolov8x.pt', help='Ball detection model (default: yolov8x.pt)')
-    parser.add_argument('--hoop-model', type=str, default='best.pt', help='Hoop detection model (default: best.pt)')
+    parser.add_argument('--hoop-model', type=str, default='Yolo-Weights/best.pt', help='Hoop detection model (default: best.pt)')
     parser.add_argument('--config', type=str, help='Use predefined model configuration (e.g., high_accuracy, balanced, real_time)')
     parser.add_argument('--list-models', action='store_true', help='List all available model configurations')
     args = parser.parse_args()
