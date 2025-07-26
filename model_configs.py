@@ -7,35 +7,35 @@ Provides different model options for optimal basketball detection
 MODEL_CONFIGS = {
     # YOLOv11 Series (Latest, Best Performance)
     "yolov11_nano": {
-        "ball_model": "yolo11n.pt",
+        "ball_model": "Yolo-Weights/yolo11n.pt",
         "description": "YOLOv11 Nano - Fastest, lowest memory",
         "speed": "⭐⭐⭐⭐⭐",
         "accuracy": "⭐⭐⭐",
         "memory": "⭐⭐⭐⭐⭐"
     },
     "yolov11_small": {
-        "ball_model": "yolo11s.pt", 
+        "ball_model": "Yolo-Weights/yolo11s.pt", 
         "description": "YOLOv11 Small - Good balance",
         "speed": "⭐⭐⭐⭐",
         "accuracy": "⭐⭐⭐⭐",
         "memory": "⭐⭐⭐⭐"
     },
     "yolov11_medium": {
-        "ball_model": "yolo11m.pt",
+        "ball_model": "Yolo-Weights/yolo11m.pt",
         "description": "YOLOv11 Medium - Better than YOLOv8m",
         "speed": "⭐⭐⭐",
         "accuracy": "⭐⭐⭐⭐",
         "memory": "⭐⭐⭐"
     },
     "yolov11_large": {
-        "ball_model": "yolo11l.pt",
+        "ball_model": "Yolo-Weights/yolo11l.pt",
         "description": "YOLOv11 Large - High accuracy",
         "speed": "⭐⭐⭐",
         "accuracy": "⭐⭐⭐⭐⭐",
         "memory": "⭐⭐"
     },
     "yolov11_xlarge": {
-        "ball_model": "yolo11x.pt",
+        "ball_model": "Yolo-Weights/yolo11x.pt",
         "description": "YOLOv11 XLarge - Highest accuracy",
         "speed": "⭐⭐",
         "accuracy": "⭐⭐⭐⭐⭐",
@@ -44,14 +44,14 @@ MODEL_CONFIGS = {
     
     # YOLOv10 Series (Speed Optimized)
     "yolov10_medium": {
-        "ball_model": "yolov10m.pt",
+        "ball_model": "Yolo-Weights/yolov10m.pt",
         "description": "YOLOv10 Medium - Speed optimized",
         "speed": "⭐⭐⭐⭐⭐",
         "accuracy": "⭐⭐⭐⭐",
         "memory": "⭐⭐⭐"
     },
     "yolov10_large": {
-        "ball_model": "yolov10l.pt",
+        "ball_model": "Yolo-Weights/yolov10l.pt",
         "description": "YOLOv10 Large - Fast + accurate",
         "speed": "⭐⭐⭐⭐",
         "accuracy": "⭐⭐⭐⭐⭐",
@@ -60,14 +60,14 @@ MODEL_CONFIGS = {
     
     # RT-DETR Series (Transformer-based)
     "rtdetr_large": {
-        "ball_model": "rtdetr-l.pt",
+        "ball_model": "Yolo-Weights/rtdetr-l.pt",
         "description": "RT-DETR Large - Transformer architecture",
         "speed": "⭐⭐⭐",
         "accuracy": "⭐⭐⭐⭐⭐",
         "memory": "⭐⭐"
     },
     "rtdetr_xlarge": {
-        "ball_model": "rtdetr-x.pt", 
+        "ball_model": "Yolo-Weights/rtdetr-x.pt", 
         "description": "RT-DETR XLarge - Highest transformer accuracy",
         "speed": "⭐⭐",
         "accuracy": "⭐⭐⭐⭐⭐",
@@ -76,14 +76,14 @@ MODEL_CONFIGS = {
     
     # YOLOv8 Enhanced (Better than current)
     "yolov8_large": {
-        "ball_model": "yolov8l.pt",
+        "ball_model": "Yolo-Weights/yolov8l.pt",
         "description": "YOLOv8 Large - Better than current yolov8m",
         "speed": "⭐⭐⭐",
         "accuracy": "⭐⭐⭐⭐",
         "memory": "⭐⭐"
     },
     "yolov8_xlarge": {
-        "ball_model": "yolov8x.pt",
+        "ball_model": "Yolo-Weights/yolov8x.pt",
         "description": "YOLOv8 XLarge - Highest YOLOv8 accuracy",
         "speed": "⭐⭐",
         "accuracy": "⭐⭐⭐⭐⭐",
@@ -92,7 +92,7 @@ MODEL_CONFIGS = {
     
     # Current baseline
     "current": {
-        "ball_model": "yolov8m.pt",
+        "ball_model": "Yolo-Weights/yolov8m.pt",
         "description": "Current YOLOv8 Medium (baseline)",
         "speed": "⭐⭐⭐",
         "accuracy": "⭐⭐⭐",

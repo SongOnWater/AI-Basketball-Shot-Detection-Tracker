@@ -1,4 +1,3 @@
-
 # Avi Shah - Basketball Shot Detector/Tracker - July 2023
 
 from ultralytics import YOLO
@@ -17,7 +16,7 @@ import os
 class DebugLogger:
     """调试日志记录器，将调试信息输出到单独文件"""
 
-    def __init__(self, input_video="video_test_5.mp4"):
+    def __init__(self, input_video="video_test_5.mp4", model_config=None):
         # 🔧 FIX: 延迟生成调试日志文件名，确保与frame/shot log时间标记一致
         # 调试日志文件名将在process_video开始时生成，使用start_datetime
         video_name = os.path.splitext(os.path.basename(input_video))[0]
@@ -27,6 +26,7 @@ class DebugLogger:
         # 🔧 FIX: 延迟初始化日志记录器，确保时间标记一致
         self.logger = None
         self.debug_logger = None
+        self.model_config = model_config
 
     def init_debug_logger(self, start_datetime):
         """
@@ -36,16 +36,21 @@ class DebugLogger:
             start_datetime: 视频处理开始时间，与frame/shot log保持一致
         """
         # 🔧 FIX: 使用start_datetime生成时间标记，确保与frame/shot log一致
-        timestamp = start_datetime.strftime('%Y%m%d_%H%M%S')
-        self.debug_log_file = f"{self.video_name}_debug_log_{timestamp}.txt"
+        timestamp = start_datetime.strftime('%Y-%m-%d_%H-%M-%S')
+        ball_model = self.model_config['ball_model'] if self.model_config and 'ball_model' in self.model_config else None
+        if not ball_model:
+            raise ValueError("Model name (ball_model) must be provided for debug log file naming.")
+        model_name = os.path.splitext(os.path.basename(ball_model))[0]
+        self.debug_log_file = f"{self.video_name}_{model_name}_debug_{timestamp}.txt"
 
-        # 配置日志记录器
-        self.logger = logging.getLogger('ShotDetectorDebug')
+        # 配置唯一日志记录器，避免 handler 冲突
+        logger_name = f"ShotDetectorDebug_{self.video_name}_{model_name}_{timestamp}"
+        self.logger = logging.getLogger(logger_name)
         self.logger.setLevel(logging.DEBUG)
 
-        # 清除现有的处理器
-        for handler in self.logger.handlers[:]:
-            self.logger.removeHandler(handler)
+        # 清除现有的处理器（只清理本 logger）
+        if self.logger.hasHandlers():
+            self.logger.handlers.clear()
 
         # 创建文件处理器
         file_handler = logging.FileHandler(self.debug_log_file, mode='w', encoding='utf-8')
@@ -56,6 +61,7 @@ class DebugLogger:
         file_handler.setFormatter(formatter)
 
         # 添加处理器到日志记录器
+        file_handler.setLevel(logging.DEBUG)
         self.logger.addHandler(file_handler)
 
         # 创建调试日志记录器的便捷方法
@@ -68,41 +74,57 @@ class DebugLogger:
         self.logger.info(f"Debug log file: {self.debug_log_file}")
         self.logger.info(f"Timestamp: {timestamp}")
         self.logger.info("=" * 50)
+        # 直接写一条debug级别日志，测试是否能写入文件
+        self.logger.debug("=== DEBUG TEST ===")
 
     def debug(self, message):
-        """记录调试信息"""
-        if hasattr(self, 'logger') and self.logger:
-            self.logger.debug(message)
-        # print(message)  # 注释掉控制台输出，避免过多输出
+        """记录调试信息，强制写入文件，并输出logger信息到控制台。"""
+        # 直接写入日志文件，保证每帧都能落盘
+        if self.debug_log_file:
+            try:
+                # 确保目录存在
+                os.makedirs(os.path.dirname(self.debug_log_file), exist_ok=True)
+                with open(self.debug_log_file, 'a', encoding='utf-8') as f:
+                    f.write(message + '\n')
+                    f.flush()  # 强制写入文件
+            except Exception as e:
+                # 尝试在当前目录创建日志文件
+                try:
+                    with open(os.path.basename(self.debug_log_file), 'a', encoding='utf-8') as f:
+                        f.write(message + '\n')
+                        f.flush()
+                except Exception as e:
+                    self.logger.error(f"Error: {e}")
 
     def info(self, message):
         """记录信息"""
-        self.logger.info(message)
-        print(message)  # 同时输出到控制台
+        if hasattr(self, 'logger') and self.logger:
+            self.logger.info(message)
 
     def warning(self, message):
         """记录警告"""
-        self.logger.warning(message)
-        print(f"⚠️ {message}")  # 同时输出到控制台
+        if hasattr(self, 'logger') and self.logger:
+            self.logger.warning(message)
 
     def error(self, message):
         """记录错误"""
-        self.logger.error(message)
-        print(f"❌ {message}")  # 同时输出到控制台
+        if hasattr(self, 'logger') and self.logger:
+            self.logger.error(message)
 
     def close(self):
         """关闭日志记录器"""
-        self.logger.info("=== Debug Log Ended ===")
-        for handler in self.logger.handlers[:]:
-            handler.close()
-            self.logger.removeHandler(handler)
+        if hasattr(self, 'logger') and self.logger:
+            self.logger.info("=== Debug Log Ended ===")
+            for handler in self.logger.handlers[:]:
+                handler.close()
+                self.logger.removeHandler(handler)
 
 class ShotLogger:
-    def __init__(self, input_video="video_test_5.mp4", ball_threshold=0.5):
+    def __init__(self, input_video="video_test_5.mp4", ball_threshold=0.5, model_config=None, ball_model_path=None):
         self.shots = []
         self.start_time = time.time()
         self.start_datetime = datetime.now()
-        self.frame_count = 0
+        self.frame_count = 1
         self.success_count = 0
         self.total_attempts = 0
         self.progress = 0
@@ -110,7 +132,9 @@ class ShotLogger:
         self.ball_threshold = ball_threshold
 
         # 🔧 FIX: 初始化调试日志记录器，使用一致的时间标记
-        self.init_debug_logger(self.start_datetime)
+        self.debug_logger = DebugLogger(input_video, model_config={'ball_model': ball_model_path})
+        self.model_config = model_config
+        self.debug_logger.init_debug_logger(self.start_datetime)
 
         # 改进的三类投篮记录
         self.successful_shots = []           # 成功投篮
@@ -182,12 +206,16 @@ class ShotLogger:
         
     def save_log(self, filename=None):
         if filename is None:
-            # Extract filename from input video path (without extension)
-            video_name = self.input_video.split('/')[-1]
-            video_name = video_name.split('.')[0]
-            # Generate log filename with video name and start time
-            timestamp = self.start_datetime.strftime('%Y%m%d_%H%M%S')
-            filename = f"{video_name}_shot_log_{timestamp}.json"
+            video_name = os.path.splitext(os.path.basename(self.input_video))[0]
+            model_name = None
+            if self.model_config and 'ball_model' in self.model_config and self.model_config['ball_model']:
+                model_name = os.path.splitext(os.path.basename(self.model_config['ball_model']))[0]
+            elif hasattr(self, 'debug_logger') and self.debug_logger and hasattr(self.debug_logger, 'model_config') and self.debug_logger.model_config and 'ball_model' in self.debug_logger.model_config and self.debug_logger.model_config['ball_model']:
+                model_name = os.path.splitext(os.path.basename(self.debug_logger.model_config['ball_model']))[0]
+            else:
+                raise ValueError("Model name (ball_model) must be provided for shot log file naming.")
+            timestamp = self.start_datetime.strftime('%Y-%m-%d_%H-%M-%S')
+            filename = f"{video_name}_{model_name}_shot_{timestamp}.json"
 
         # 生成改进的投篮日志
         processing_time = time.time() - self.start_time
@@ -346,10 +374,16 @@ class ShotLogger:
         """
         # Skip logging if no debug file is being created
         if not hasattr(self, '_frame_log_file'):
-            # Create frame log filename based on input video
-            video_name = self.input_video.split('/')[-1].split('.')[0]
-            timestamp = self.start_datetime.strftime('%Y%m%d_%H%M%S')
-            frame_log_filename = f"{video_name}_frame_log_{timestamp}.json"
+            video_name = os.path.splitext(os.path.basename(self.input_video))[0]
+            model_name = None
+            if self.model_config and 'ball_model' in self.model_config and self.model_config['ball_model']:
+                model_name = os.path.splitext(os.path.basename(self.model_config['ball_model']))[0]
+            elif hasattr(self, 'debug_logger') and self.debug_logger and hasattr(self.debug_logger, 'model_config') and self.debug_logger.model_config and 'ball_model' in self.debug_logger.model_config and self.debug_logger.model_config['ball_model']:
+                model_name = os.path.splitext(os.path.basename(self.debug_logger.model_config['ball_model']))[0]
+            else:
+                raise ValueError("Model name (ball_model) must be provided for frame log file naming.")
+            timestamp = self.start_datetime.strftime('%Y-%m-%d_%H-%M-%S')
+            frame_log_filename = f"{video_name}_{model_name}_frame_{timestamp}.json"
             self._frame_log_file = open(frame_log_filename, 'w')
             self._frame_log_file.write('[')  # Start JSON array
             self._first_frame_logged = False  # Track if first frame has been logged
@@ -428,14 +462,14 @@ class ShotLogger:
 
 
 class ShotDetector:
-    def __init__(self, input_video="video_test_5.mp4", output_video=None, ball_model_path="yolov8m.pt", hoop_model_path="best.pt", person_model_path=None, use_shared_model=True, min_ball_area=400, enable_person_detection=False):
+    def __init__(self, input_video="video_test_5.mp4", output_video=None, ball_model_path="yolov8m.pt", hoop_model_path="best.pt", person_model_path=None, use_shared_model=True, min_ball_area=400, enable_person_detection=False, model_config=None):
+        import os
         # Load models for optimal detection
         self.overlay_text = "Waiting..."
         self.use_shared_model = use_shared_model
 
-        # 初始化调试日志器
-        self.debug_logger = DebugLogger(input_video)
-        self.debug_logger.info(f"ShotDetector initialized with video: {input_video}")
+        # 不再在 ShotDetector 内部创建 debug_logger
+        self.model_config = model_config
         self.enable_person_detection = enable_person_detection
 
         # Load main detection model (YOLOv8m for sports ball and person)
@@ -467,11 +501,24 @@ class ShotDetector:
         # For backward compatibility, set primary model as ball model
         self.model = self.ball_model
         self.model_path = ball_model_path
+        self.input_video = input_video
+
+        # --- Output video filename logic ---
+        if output_video is None:
+            video_name = os.path.splitext(os.path.basename(input_video))[0]
+            if not ball_model_path:
+                raise ValueError("Model name (ball_model_path) must be provided for output video file naming.")
+            model_name = os.path.splitext(os.path.basename(ball_model_path))[0]
+            timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+            output_video = f"{video_name}_{model_name}_output_{timestamp}.mp4"
         self.output_video = output_video
         self.video_writer = None
-        self.input_video = input_video
-        self.logger = ShotLogger(input_video=input_video, ball_threshold=0.5)
-        
+
+        self.logger = ShotLogger(input_video=input_video, ball_threshold=0.5, ball_model_path=ball_model_path)
+        # 关键：让 ShotDetector 直接引用 ShotLogger 的 debug_logger
+        self.debug_logger = self.logger.debug_logger
+        self.debug_logger.debug("[ShotDetector] debug_logger now references ShotLogger's initialized logger.")
+        # ...existing code...
         # Uncomment this line to accelerate inference. Note that this may cause errors in some setups.
         #self.model.half()
         
@@ -520,7 +567,7 @@ class ShotDetector:
         self.selected_ball = None  # Best ball detection from current frame for UP/DOWN analysis
         self.selected_hoop = None  # Best hoop detection from current frame for UP/DOWN analysis
 
-        self.frame_count = 0
+        self.frame_count = 1
         self.frame = None
 
         self.makes = 0
@@ -540,37 +587,24 @@ class ShotDetector:
         # Ball filtering parameters
         self.min_ball_area = min_ball_area  # Minimum ball area in pixels (width * height)
 
-    def is_reasonable_ball_position(self, ball_data, frame_height=1080):
+
+    def is_reasonable_ball_position(self, ball_data, frame_height=None):
         """
         Check if ball position is reasonable to filter out false positives
 
         Args:
             ball_data: Ball detection dictionary with 'center' key
-            frame_height: Maximum reasonable frame height
+            frame_height: Maximum reasonable frame height. If None, will use current frame height.
 
         Returns:
             bool: True if position is reasonable, False otherwise
         """
-        center_y = ball_data['center'][1]
+        if frame_height is None:
+            if hasattr(self, 'frame') and self.frame is not None:
+                frame_height = self.frame.shape[0]
+            else:
+                frame_height = 1080  # fallback if frame not available
 
-        # Position reasonableness check
-        if center_y > frame_height * 1.1:  # Allow 10% margin above typical height
-            self.debug_logger.warning(f"Ball Y position {center_y} exceeds reasonable limit {frame_height * 1.1}")
-            return False
-
-        return True
-
-    def is_reasonable_ball_position(self, ball_data, frame_height=1080):
-        """
-        Check if ball position is reasonable to filter out false positives
-
-        Args:
-            ball_data: Ball detection dictionary with 'center' key
-            frame_height: Maximum reasonable frame height
-
-        Returns:
-            bool: True if position is reasonable, False otherwise
-        """
         center_y = ball_data['center'][1]
 
         # Position reasonableness check
@@ -799,6 +833,7 @@ class ShotDetector:
                     self.video_writer.release()
                 break
 
+
             # Run detection models
             if self.use_shared_model:
                 # Use shared model for both ball and person detection
@@ -810,10 +845,34 @@ class ShotDetector:
                 hoop_results = self.hoop_model(self.frame, stream=True, device=self.device, verbose=False)
                 person_results = self.person_model(self.frame, stream=True, device=self.device, verbose=False)
 
+
+
+            # ...existing code...
+
             # Collect all detections in current frame for logging
             current_frame_balls = []
             current_frame_hoops = []
             current_frame_persons = []
+
+            # ...existing code for detection collection...
+
+
+            # ...existing code for detection collection...
+
+
+            # === 每帧详细debug输出（必须在所有检测append和selected_ball/hoop赋值后） ===
+            # 先处理main/hoop/person detection append...
+            # 再选出selected_ball/selected_hoop（在process_frame_detections前赋值）
+            # 这里每帧都写入debug log
+            self.debug_logger.debug(f"Frame {self.frame_count}: balls={len(current_frame_balls)}, hoops={len(current_frame_hoops)}, persons={len(current_frame_persons)}")
+            if hasattr(self, 'selected_ball') and self.selected_ball:
+                self.debug_logger.debug(f"  Selected ball: pos={self.selected_ball[0]}, conf={self.selected_ball[4]:.2f}")
+            else:
+                self.debug_logger.debug(f"  Selected ball: None")
+            if hasattr(self, 'selected_hoop') and self.selected_hoop:
+                self.debug_logger.debug(f"  Selected hoop: pos={self.selected_hoop[0]}, conf={self.selected_hoop[4]:.2f}")
+            else:
+                self.debug_logger.debug(f"  Selected hoop: None")
 
             # Process main model detections (ball and person if shared model)
             for r in main_results:
@@ -992,7 +1051,6 @@ class ShotDetector:
             self.debug_logger.debug(f"📍 Processing frame {self.frame_count} with {len(current_frame_balls)} balls, {len(current_frame_hoops)} hoops")
             self.process_frame_detections(current_frame_balls, current_frame_hoops)
             self.display_score()
-            self.frame_count += 1
             self.logger.frame_count = self.frame_count
             self.logger.update_progress(self.frame_count, self.total_frames)
             progress_bar.update(1)
@@ -1035,6 +1093,7 @@ class ShotDetector:
                 self.selected_ball,
                 self.selected_hoop
             )
+            self.frame_count += 1
 
         progress_bar.close()
         self.cap.release()
@@ -1492,7 +1551,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Basketball Shot Detector with Enhanced Model Support')
     parser.add_argument('--input', type=str, default='video_test_5.mp4', help='Input video file path')
     parser.add_argument('--output', type=str, help='Output video file path')
-    parser.add_argument('--ball-model', type=str, default='yolov8m.pt', help='Ball detection model (default: yolov8m.pt)')
+    parser.add_argument('--ball-model', type=str, default='Yolo-Weights/yolov8x.pt', help='Ball detection model (default: yolov8x.pt)')
     parser.add_argument('--hoop-model', type=str, default='best.pt', help='Hoop detection model (default: best.pt)')
     parser.add_argument('--config', type=str, help='Use predefined model configuration (e.g., high_accuracy, balanced, real_time)')
     parser.add_argument('--list-models', action='store_true', help='List all available model configurations')
