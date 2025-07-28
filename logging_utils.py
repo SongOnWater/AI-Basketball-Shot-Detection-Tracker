@@ -1,0 +1,144 @@
+"""
+日志工具模块，包含 DebugLogger 和 ShotLogger 类
+"""
+import os
+import json
+from datetime import datetime
+
+
+class DebugLogger:
+    """
+    调试日志记录器，用于记录控制台输出(纯文本格式)
+    """
+    def __init__(self, debug_log_file=None, input_file=None, model_path=None, log_type="debug"):
+        if input_file and model_path:
+            input_name = os.path.splitext(os.path.basename(input_file))[0]
+            model_name = os.path.splitext(os.path.basename(model_path))[0]
+            timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+            self.debug_log_file = os.path.join(os.path.dirname(debug_log_file or ''), f'{input_name}_{model_name}_{log_type}_{timestamp}.txt')
+        else:
+            self.debug_log_file = debug_log_file or os.path.join('logs', 'debug_output.txt')
+        
+        self._log_file = None
+        self._debug_enabled = True  # 启用控制台输出
+
+        if self.debug_log_file:
+            os.makedirs(os.path.dirname(self.debug_log_file), exist_ok=True)
+            self._log_file = open(self.debug_log_file, 'w', encoding='utf-8')
+
+    def debug(self, message):
+        """记录调试信息"""
+        if self._debug_enabled:
+            self._log('DEBUG', message)
+
+    def info(self, message):
+        """记录一般信息"""
+        self._log('INFO', message)
+
+    def warning(self, message):
+        """记录警告信息"""
+        self._log('WARNING', message)
+
+    def _log(self, level, message):
+        """内部日志记录方法"""
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        log_entry = f"[{timestamp}] [{level}] {message}\n"
+        print(log_entry, end='')
+
+        if self._log_file:
+            self._log_file.write(log_entry)
+
+    def close(self):
+        """关闭日志文件"""
+        if self._log_file and not self._log_file.closed:
+            self._log_file.close()
+
+
+class ShotLogger:
+    """
+    投篮日志记录器，专门用于记录投篮相关数据
+    """
+    def __init__(self, log_dir='logs', input_file=None, model_path=None, log_type="frame"):
+        self.input_file = input_file
+        self.model_path = model_path
+        os.makedirs(log_dir, exist_ok=True)
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        input_name = os.path.splitext(os.path.basename(input_file))[0] if input_file else 'unknown_input'
+        model_name = os.path.splitext(os.path.basename(model_path))[0] if model_path and isinstance(model_path, str) else 'custom_model'
+        self.log_file = os.path.join(log_dir, f'{input_name}_{model_name}_{log_type}_{timestamp}.json')
+        self.frame_count = 0
+        self._log_data = []
+
+    def log_frame_data(self, frame_idx, ball_pos, hoop_pos, person_pos,
+                      selected_ball_idx, selected_hoop_idx, selected_person_idx,
+                      current_frame_balls, current_frame_hoops, current_frame_persons,
+                      selected_ball, selected_hoop):
+        """记录帧数据"""
+        frame_data = {
+            "frame_idx": frame_idx,
+            "ball_positions": [{"x": p[0][0], "y": p[0][1], "frame": p[1], 
+                              "width": p[2], "height": p[3], "confidence": p[4]} 
+                             for p in ball_pos],
+            "hoop_positions": [{"x": p[0][0], "y": p[0][1], "frame": p[1], 
+                              "width": p[2], "height": p[3], "confidence": p[4]} 
+                             for p in hoop_pos],
+            "selected_ball_idx": selected_ball_idx,
+            "selected_hoop_idx": selected_hoop_idx,
+            "current_frame_balls": current_frame_balls,
+            "current_frame_hoops": current_frame_hoops
+        }
+        
+        if person_pos:
+            frame_data["person_positions"] = [{"x": p[0][0], "y": p[0][1], "frame": p[1], 
+                                            "width": p[2], "height": p[3], "confidence": p[4]} 
+                                           for p in person_pos]
+            frame_data["selected_person_idx"] = selected_person_idx
+            frame_data["current_frame_persons"] = current_frame_persons
+        
+        if selected_ball:
+            frame_data["selected_ball"] = {"x": selected_ball[0][0], "y": selected_ball[0][1], 
+                                         "frame": selected_ball[1], "width": selected_ball[2], 
+                                         "height": selected_ball[3], "confidence": selected_ball[4]}
+        
+        if selected_hoop:
+            frame_data["selected_hoop"] = {"x": selected_hoop[0][0], "y": selected_hoop[0][1], 
+                                         "frame": selected_hoop[1], "width": selected_hoop[2], 
+                                         "height": selected_hoop[3], "confidence": selected_hoop[4]}
+        
+        self._log_data.append(frame_data)
+
+    def log_shot(self, frame_idx, timestamp, ball_pos, hoop_pos, ball_confidence, is_successful, debug_info=None):
+        """记录投篮结果"""
+        shot_data = {
+            "frame_idx": frame_idx,
+            "timestamp": timestamp,
+            "ball_pos": {"x": ball_pos[0], "y": ball_pos[1]},
+            "hoop_pos": {"x": hoop_pos[0], "y": hoop_pos[1]},
+            "ball_confidence": ball_confidence,
+            "is_successful": is_successful,
+            "debug_info": debug_info
+        }
+        self._log_data.append({"shot": shot_data})
+
+    def update_progress(self, current_frame, total_frames):
+        """更新处理进度"""
+        self.frame_count = current_frame
+
+    def save_log(self):
+        """保存日志到文件"""
+        with open(self.log_file, 'w', encoding='utf-8') as f:
+            json.dump(self._log_data, f, indent=2, ensure_ascii=False)
+        return self.log_file
+
+    def print_improved_summary(self):
+        """打印改进的摘要信息"""
+        shots = [entry for entry in self._log_data if "shot" in entry]
+        makes = sum(1 for shot in shots if shot["shot"]["is_successful"])
+        attempts = len(shots)
+        
+        print(f"\n🏀 投篮统计: {makes}/{attempts} ({makes/attempts*100:.1f}%)")
+        if attempts > 0:
+            print(f"✅ 命中: {makes}")
+            print(f"❌ 未中: {attempts - makes}")
+        else:
+            print("⚠️ 没有检测到投篮尝试")

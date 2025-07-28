@@ -141,10 +141,21 @@ def score(ball_pos, hoop_pos, debug_info=None):
 
 # Detects if the ball is below the net - used to detect shot attempts
 def detect_down(ball_pos, hoop_pos):
-    y = hoop_pos[-1][0][1] + 0.5 * hoop_pos[-1][3]
-    if ball_pos[-1][0][1] > y:
-        return True
-    return False
+    """
+    检测球是否在篮筐下方（Down区域）
+    使用篮筐上边缘的Y值作为分界线
+    """
+    if not hoop_pos:
+        return False
+    
+    # 篮筐上边缘的Y值
+    rim_top_y = hoop_pos[-1][0][1] - 0.5 * hoop_pos[-1][3]
+    
+    # 球的位置Y值
+    ball_y = ball_pos[-1][0][1]
+    
+    # 如果球在篮筐上边缘下方，则认为是Down区域
+    return ball_y > rim_top_y
 
 
 # Detects if the ball is around the backboard - used to detect shot attempts

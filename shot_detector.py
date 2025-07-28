@@ -8,461 +8,17 @@ import numpy as np
 import json
 import time
 from tqdm import tqdm
+import math
 from utils import score, in_hoop_region, clean_hoop_pos, clean_ball_pos, get_device
 from datetime import datetime
 import logging
 import os
 
-class DebugLogger:
-    """调试日志记录器，将调试信息输出到单独文件"""
-
-    def __init__(self, input_video="video_test_5.mp4", model_config=None):
-        # 🔧 FIX: 延迟生成调试日志文件名，确保与frame/shot log时间标记一致
-        # 调试日志文件名将在process_video开始时生成，使用start_datetime
-        video_name = os.path.splitext(os.path.basename(input_video))[0]
-        self.video_name = video_name  # 保存视频名称供后续使用
-        self.debug_log_file = None    # 延迟初始化
-
-        # 🔧 FIX: 延迟初始化日志记录器，确保时间标记一致
-        self.logger = None
-        self.debug_logger = None
-        self.model_config = model_config
-
-    def init_debug_logger(self, start_datetime):
-        """
-        初始化调试日志记录器，使用与frame/shot log一致的时间标记
-
-        Args:
-            start_datetime: 视频处理开始时间，与frame/shot log保持一致
-        """
-        # 🔧 FIX: 使用start_datetime生成时间标记，确保与frame/shot log一致
-        timestamp = start_datetime.strftime('%Y-%m-%d_%H-%M-%S')
-        ball_model = self.model_config['ball_model'] if self.model_config and 'ball_model' in self.model_config else None
-        if not ball_model:
-            raise ValueError("Model name (ball_model) must be provided for debug log file naming.")
-        model_name = os.path.splitext(os.path.basename(ball_model))[0]
-        self.debug_log_file = f"{self.video_name}_{model_name}_debug_{timestamp}.txt"
-
-        # 配置唯一日志记录器，避免 handler 冲突
-        logger_name = f"ShotDetectorDebug_{self.video_name}_{model_name}_{timestamp}"
-        self.logger = logging.getLogger(logger_name)
-        self.logger.setLevel(logging.DEBUG)
-
-        # 清除现有的处理器（只清理本 logger）
-        if self.logger.hasHandlers():
-            self.logger.handlers.clear()
-
-        # 创建文件处理器
-        file_handler = logging.FileHandler(self.debug_log_file, mode='w', encoding='utf-8')
-        file_handler.setLevel(logging.DEBUG)
-
-        # 创建格式器
-        formatter = logging.Formatter('%(message)s')  # 简化格式，只显示消息
-        file_handler.setFormatter(formatter)
-
-        # 添加处理器到日志记录器
-        file_handler.setLevel(logging.DEBUG)
-        self.logger.addHandler(file_handler)
-
-        # 创建调试日志记录器的便捷方法
-        self.debug_logger = self.logger
-
-        # 记录开始信息
-        self.logger.info(f"=== Debug Log Started ===")
-        self.logger.info(f"Video: {self.video_name}")
-        self.logger.info(f"Start time: {start_datetime.strftime('%Y-%m-%d %H:%M:%S')}")
-        self.logger.info(f"Debug log file: {self.debug_log_file}")
-        self.logger.info(f"Timestamp: {timestamp}")
-        self.logger.info("=" * 50)
-        # 直接写一条debug级别日志，测试是否能写入文件
-        self.logger.debug("=== DEBUG TEST ===")
-
-    def debug(self, message):
-        """记录调试信息，强制写入文件，并输出logger信息到控制台。"""
-        # 直接写入日志文件，保证每帧都能落盘
-        if self.debug_log_file:
-            try:
-                # 确保目录存在
-                os.makedirs(os.path.dirname(self.debug_log_file), exist_ok=True)
-                with open(self.debug_log_file, 'a', encoding='utf-8') as f:
-                    f.write(message + '\n')
-                    f.flush()  # 强制写入文件
-            except Exception as e:
-                # 尝试在当前目录创建日志文件
-                try:
-                    with open(os.path.basename(self.debug_log_file), 'a', encoding='utf-8') as f:
-                        f.write(message + '\n')
-                        f.flush()
-                except Exception as e:
-                    self.logger.error(f"Error: {e}")
-
-    def info(self, message):
-        """记录信息"""
-        if hasattr(self, 'logger') and self.logger:
-            self.logger.info(message)
-
-    def warning(self, message):
-        """记录警告"""
-        if hasattr(self, 'logger') and self.logger:
-            self.logger.warning(message)
-
-    def error(self, message):
-        """记录错误"""
-        if hasattr(self, 'logger') and self.logger:
-            self.logger.error(message)
-
-    def close(self):
-        """关闭日志记录器"""
-        if hasattr(self, 'logger') and self.logger:
-            self.logger.info("=== Debug Log Ended ===")
-            for handler in self.logger.handlers[:]:
-                handler.close()
-                self.logger.removeHandler(handler)
-
-class ShotLogger:
-    def __init__(self, input_video="video_test_5.mp4", ball_threshold=0.5, model_config=None, ball_model_path=None):
-        self.shots = []
-        self.start_time = time.time()
-        self.start_datetime = datetime.now()
-        self.frame_count = 1
-        self.success_count = 0
-        self.total_attempts = 0
-        self.progress = 0
-        self.input_video = input_video
-        self.ball_threshold = ball_threshold
-
-        # 🔧 FIX: 初始化调试日志记录器，使用一致的时间标记
-        self.debug_logger = DebugLogger(input_video, model_config={'ball_model': ball_model_path})
-        self.model_config = model_config
-        self.debug_logger.init_debug_logger(self.start_datetime)
-
-        # 改进的三类投篮记录
-        self.successful_shots = []           # 成功投篮
-        self.detected_failed_shots = []      # 识别到投篮但失败
-        self.undetected_attempts = []        # 未检测到投篮
-        
-    def log_shot(self, frame_idx, timestamp, ball_pos, hoop_pos, ball_confidence, is_successful, debug_info=None):
-        """
-        Record shot information with improved classification
-
-        Args:
-            frame_idx: Frame index
-            timestamp: Timestamp
-            ball_pos: Ball position
-            hoop_pos: Hoop position
-            ball_confidence: Ball confidence
-            is_successful: Whether the shot was successful
-            debug_info: Debug information dictionary
-        """
-        if is_successful:
-            self.success_count += 1
-        self.total_attempts += 1
-
-        # 创建完整的投篮数据
-        shot_data = {
-            "frame_index": frame_idx,
-            "timestamp": timestamp,
-            "ball_position": ball_pos,
-            "ball_confidence": ball_confidence,
-            "hoop_position": hoop_pos,
-            "debug_info": debug_info if debug_info else {}
-        }
-
-        # 根据debug_info中的detection_type进行分类
-        detection_type = debug_info.get('shot_context', {}).get('detection_type', 'unknown') if debug_info else 'unknown'
-
-        if is_successful:
-            # 成功投篮
-            shot_data["result_category"] = "successful"
-            shot_data["is_successful"] = True
-            self.successful_shots.append(shot_data)
-
-        elif detection_type == "valid_shot_attempt":
-            # 识别到UP→DOWN轨迹但失败
-            shot_data["result_category"] = "detected_failed"
-            shot_data["is_successful"] = False
-            self.detected_failed_shots.append(shot_data)
-
-        else:
-            # 未检测到UP→DOWN轨迹
-            shot_data["result_category"] = "undetected_attempt"
-            shot_data["is_successful"] = False
-            self.undetected_attempts.append(shot_data)
-
-        # 保持向后兼容性
-        legacy_shot_data = {
-            "frame_index": frame_idx,
-            "timestamp": timestamp,
-            "is_successful": is_successful,
-            "_debug_info": debug_info,
-            "_ball_position": ball_pos,
-            "_hoop_position": hoop_pos,
-            "_ball_confidence": ball_confidence
-        }
-        self.shots.append(legacy_shot_data)
-    
-    def update_progress(self, current, total):
-        self.progress = (current / total) * 100
-        
-    def save_log(self, filename=None):
-        if filename is None:
-            video_name = os.path.splitext(os.path.basename(self.input_video))[0]
-            model_name = None
-            if self.model_config and 'ball_model' in self.model_config and self.model_config['ball_model']:
-                model_name = os.path.splitext(os.path.basename(self.model_config['ball_model']))[0]
-            elif hasattr(self, 'debug_logger') and self.debug_logger and hasattr(self.debug_logger, 'model_config') and self.debug_logger.model_config and 'ball_model' in self.debug_logger.model_config and self.debug_logger.model_config['ball_model']:
-                model_name = os.path.splitext(os.path.basename(self.debug_logger.model_config['ball_model']))[0]
-            else:
-                raise ValueError("Model name (ball_model) must be provided for shot log file naming.")
-            timestamp = self.start_datetime.strftime('%Y-%m-%d_%H-%M-%S')
-            filename = f"{video_name}_{model_name}_shot_{timestamp}.json"
-
-        # 生成改进的投篮日志
-        processing_time = time.time() - self.start_time
-
-        # 计算统计数据
-        total_attempts = len(self.successful_shots) + len(self.detected_failed_shots) + len(self.undetected_attempts)
-        successful_count = len(self.successful_shots)
-        detected_failed_count = len(self.detected_failed_shots)
-        undetected_count = len(self.undetected_attempts)
-
-        # 计算各种成功率
-        overall_success_rate = (successful_count / total_attempts * 100) if total_attempts > 0 else 0
-        valid_attempts = successful_count + detected_failed_count
-        shooting_accuracy = (successful_count / valid_attempts * 100) if valid_attempts > 0 else 0
-        detection_accuracy = (valid_attempts / total_attempts * 100) if total_attempts > 0 else 0
-
-        # 分析失败原因
-        failure_analysis = self._analyze_failures()
-
-        improved_log = {
-            "input_video": self.input_video,
-            "processing_start": self.start_datetime.strftime("%Y-%m-%d %H:%M:%S"),
-            "processing_time_seconds": round(processing_time, 2),
-            "total_frames": self.frame_count,
-            "ball_threshold": self.ball_threshold,
-
-            # 总体统计
-            "summary": {
-                "total_attempts": total_attempts,
-                "successful_shots_count": successful_count,
-                "detected_failed_shots_count": detected_failed_count,
-                "undetected_attempts_count": undetected_count,
-
-                # 各种成功率
-                "overall_success_rate": round(overall_success_rate, 2),
-                "shooting_accuracy": round(shooting_accuracy, 2),  # 在有效投篮中的成功率
-                "detection_accuracy": round(detection_accuracy, 2),  # 投篮检测准确率
-            },
-
-            # 分类详情
-            "shot_categories": {
-                "successful_shots": {
-                    "count": successful_count,
-                    "description": "成功投篮 - 检测到UP→DOWN轨迹且球进筐",
-                    "shots": self.successful_shots
-                },
-                "detected_failed_shots": {
-                    "count": detected_failed_count,
-                    "description": "识别到UP→DOWN轨迹但失败 - 球未进筐",
-                    "shots": self.detected_failed_shots
-                },
-                "undetected_attempts": {
-                    "count": undetected_count,
-                    "description": "未检测到UP→DOWN轨迹 - 不符合投篮模式",
-                    "shots": self.undetected_attempts
-                }
-            },
-
-            # 失败原因分析
-            "failure_analysis": failure_analysis
-        }
-
-        # 保存改进的日志
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(improved_log, f, indent=2, ensure_ascii=False)
-
-        return filename
-
-    def _analyze_failures(self):
-        """分析失败原因"""
-        failure_reasons = {}
-
-        # 分析检测到的失败投篮
-        for shot in self.detected_failed_shots:
-            reason = shot.get('debug_info', {}).get('failure_reason', 'Unknown')
-            if reason not in failure_reasons:
-                failure_reasons[reason] = {"detected_failed": 0, "undetected": 0}
-            failure_reasons[reason]["detected_failed"] += 1
-
-        # 分析未检测到的投篮
-        for shot in self.undetected_attempts:
-            reason = shot.get('debug_info', {}).get('failure_reason', 'Unknown')
-            if reason not in failure_reasons:
-                failure_reasons[reason] = {"detected_failed": 0, "undetected": 0}
-            failure_reasons[reason]["undetected"] += 1
-
-        return failure_reasons
-
-
-
-    def print_improved_summary(self):
-        """打印改进的摘要"""
-        total_attempts = len(self.successful_shots) + len(self.detected_failed_shots) + len(self.undetected_attempts)
-        successful_count = len(self.successful_shots)
-        detected_failed_count = len(self.detected_failed_shots)
-        undetected_count = len(self.undetected_attempts)
-
-        # 计算各种成功率
-        overall_success_rate = (successful_count / total_attempts * 100) if total_attempts > 0 else 0
-        valid_attempts = successful_count + detected_failed_count
-        shooting_accuracy = (successful_count / valid_attempts * 100) if valid_attempts > 0 else 0
-        detection_accuracy = (valid_attempts / total_attempts * 100) if total_attempts > 0 else 0
-
-        print("\n" + "="*60)
-        print("📊 改进的投篮检测报告")
-        print("="*60)
-
-        print(f"🎥 视频: {self.input_video}")
-        print(f"⏱️  处理时间: {time.time() - self.start_time:.2f}秒")
-        print(f"🎯 球检测阈值: {self.ball_threshold}")
-
-        print(f"\n📈 总体统计:")
-        print(f"  总尝试次数: {total_attempts}")
-        print(f"  成功投篮: {successful_count}")
-        print(f"  识别到但失败: {detected_failed_count}")
-        print(f"  未检测到: {undetected_count}")
-
-        print(f"\n🎯 成功率分析:")
-        print(f"  总体成功率: {overall_success_rate:.1f}%")
-        print(f"  投篮准确率: {shooting_accuracy:.1f}% (在有效投篮中)")
-        print(f"  检测准确率: {detection_accuracy:.1f}% (正确识别投篮)")
-
-        print(f"\n📋 分类详情:")
-        print(f"  成功投篮 - 检测到UP→DOWN轨迹且球进筐: {successful_count}次")
-        print(f"  识别到UP→DOWN轨迹但失败 - 球未进筐: {detected_failed_count}次")
-        print(f"  未检测到UP→DOWN轨迹 - 不符合投篮模式: {undetected_count}次")
-
-        # 显示失败原因
-        failure_analysis = self._analyze_failures()
-        if failure_analysis:
-            print(f"\n❌ 失败原因分析:")
-            for reason, counts in failure_analysis.items():
-                total = counts["detected_failed"] + counts["undetected"]
-                print(f"  {reason}: {total}次")
-                if counts["detected_failed"] > 0:
-                    print(f"    - 识别到但失败: {counts['detected_failed']}次")
-                if counts["undetected"] > 0:
-                    print(f"    - 未检测到: {counts['undetected']}次")
-
-    def log_frame_data(self, frame_count, all_balls, all_hoops, all_persons=None, selected_ball_idx=-1, selected_hoop_idx=-1, selected_person_idx=-1,
-                       current_frame_balls=None, current_frame_hoops=None, current_frame_persons=None, selected_ball=None, selected_hoop=None):
-        """
-        Log detailed frame processing data for analysis
-
-        Args:
-            frame_count: Current frame number
-            all_balls: List of all ball trajectory points (historical data)
-            all_hoops: List of all hoop trajectory points (historical data)
-            all_persons: List of all person trajectory points (historical data)
-            selected_ball_idx: Index of selected ball in all_balls (-1 if none)
-            selected_hoop_idx: Index of selected hoop in all_hoops (-1 if none)
-            selected_person_idx: Index of selected person in all_persons (-1 if none)
-            current_frame_balls: List of all balls detected by YOLO in current frame
-            current_frame_hoops: List of all hoops detected by YOLO in current frame
-            current_frame_persons: List of all persons detected by YOLO in current frame
-        """
-        # Skip logging if no debug file is being created
-        if not hasattr(self, '_frame_log_file'):
-            video_name = os.path.splitext(os.path.basename(self.input_video))[0]
-            model_name = None
-            if self.model_config and 'ball_model' in self.model_config and self.model_config['ball_model']:
-                model_name = os.path.splitext(os.path.basename(self.model_config['ball_model']))[0]
-            elif hasattr(self, 'debug_logger') and self.debug_logger and hasattr(self.debug_logger, 'model_config') and self.debug_logger.model_config and 'ball_model' in self.debug_logger.model_config and self.debug_logger.model_config['ball_model']:
-                model_name = os.path.splitext(os.path.basename(self.debug_logger.model_config['ball_model']))[0]
-            else:
-                raise ValueError("Model name (ball_model) must be provided for frame log file naming.")
-            timestamp = self.start_datetime.strftime('%Y-%m-%d_%H-%M-%S')
-            frame_log_filename = f"{video_name}_{model_name}_frame_{timestamp}.json"
-            self._frame_log_file = open(frame_log_filename, 'w')
-            self._frame_log_file.write('[')  # Start JSON array
-            self._first_frame_logged = False  # Track if first frame has been logged
-
-        # Prepare frame data
-        frame_data = {
-            "frame": frame_count,
-            "timestamp": frame_count / 30.0,  # Assuming 30fps
-            "ball_threshold": 0.4,  # Current ball confidence threshold
-            "hoop_threshold": 0.4,  # Current hoop confidence threshold
-            "person_threshold": 0.3,  # Current person confidence threshold
-            "trajectory_balls": [],  # Historical ball trajectory points
-            "trajectory_hoops": [],  # Historical hoop trajectory points
-            "trajectory_persons": [],  # Historical person trajectory points
-            "current_detections": {  # All YOLO detections in current frame
-                "balls": current_frame_balls if current_frame_balls else [],
-                "hoops": current_frame_hoops if current_frame_hoops else [],
-                "persons": current_frame_persons if current_frame_persons else []
-            },
-            "selected_ball_idx": selected_ball_idx,
-            "selected_hoop_idx": selected_hoop_idx,
-            "selected_person_idx": selected_person_idx,
-            "selected_ball": selected_ball if selected_ball else (all_balls[selected_ball_idx] if selected_ball_idx >= 0 else None),
-            "selected_hoop": selected_hoop if selected_hoop else (all_hoops[selected_hoop_idx] if selected_hoop_idx >= 0 else None),
-            "selected_person": all_persons[selected_person_idx] if all_persons and selected_person_idx >= 0 else None,
-            "selection_criteria": {
-                "has_synchronized_detection": bool(selected_ball and selected_hoop),
-                "ball_confidence": selected_ball[4] if selected_ball else None,
-                "hoop_confidence": selected_hoop[4] if selected_hoop else None,
-                "selection_reason": "best_confidence_in_frame" if selected_ball and selected_hoop else "legacy_last_detection"
-            }
-        }
-
-        # Add all trajectory ball points (historical data)
-        for i, ball in enumerate(all_balls):
-            frame_data["trajectory_balls"].append({
-                "index": i,
-                "position": ball[0],
-                "frame": ball[1],
-                "confidence": float(ball[4]),
-                "size": {"width": ball[2], "height": ball[3]},
-                "above_threshold": float(ball[4]) >= 0.2
-            })
-
-        # Add all trajectory hoop points (historical data)
-        for i, hoop in enumerate(all_hoops):
-            frame_data["trajectory_hoops"].append({
-                "index": i,
-                "position": hoop[0],
-                "frame": hoop[1],
-                "confidence": float(hoop[4]),
-                "size": {"width": hoop[2], "height": hoop[3]},
-                "above_threshold": float(hoop[4]) >= 0.4
-            })
-
-        # Add all trajectory person points (historical data)
-        if all_persons:
-            for i, person in enumerate(all_persons):
-                frame_data["trajectory_persons"].append({
-                    "index": i,
-                    "position": person[0],
-                    "frame": person[1],
-                    "confidence": float(person[4]),
-                    "size": {"width": person[2], "height": person[3]},
-                    "above_threshold": float(person[4]) >= 0.3
-                })
-
-        # Write frame data to frame log file
-        if self._first_frame_logged:
-            self._frame_log_file.write(',\n')
-        json.dump(frame_data, self._frame_log_file, indent=2)
-        self._first_frame_logged = True
-
-
-        
+from logging_utils import DebugLogger, ShotLogger
 
 
 class ShotDetector:
-    def __init__(self, input_video="video_test_5.mp4", output_video=None, ball_model_path="yolov8m.pt", hoop_model_path="best.pt", person_model_path=None, use_shared_model=True, min_ball_area=400, enable_person_detection=False, model_config=None):
+    def __init__(self, input_video="video_test_5.mp4", output_video=None, ball_model_path="yolov8m.pt", hoop_model_path=None, person_model_path=None, use_shared_model=True, min_ball_area=400, enable_person_detection=False, model_config=None):
         import os
         # Load models for optimal detection
         self.overlay_text = "Waiting..."
@@ -477,10 +33,10 @@ class ShotDetector:
         self.ball_model = YOLO(ball_model_path)
         print(f"🏀 Loaded main model: {ball_model_path}")
 
-        # Load hoop detection model (custom trained model)
-        self.hoop_model_path = hoop_model_path
-        self.hoop_model = YOLO(hoop_model_path)
-        print(f"🏀 Loaded hoop model: {hoop_model_path}")
+        # Load hoop detection model (use ball model if not specified)
+        self.hoop_model_path = hoop_model_path if hoop_model_path else ball_model_path
+        self.hoop_model = YOLO(self.hoop_model_path)
+        print(f"🏀 Loaded hoop model: {self.hoop_model_path}")
 
         # Person detection: only load if enabled
         if enable_person_detection:
@@ -514,16 +70,16 @@ class ShotDetector:
         self.output_video = output_video
         self.video_writer = None
 
-        self.logger = ShotLogger(input_video=input_video, ball_threshold=0.5, ball_model_path=ball_model_path)
+        self.logger = ShotLogger(input_file=self.input_video, model_path=self.ball_model_path, log_type="frame")
         # 关键：让 ShotDetector 直接引用 ShotLogger 的 debug_logger
-        self.debug_logger = self.logger.debug_logger
+        self.debug_logger = DebugLogger(debug_log_file=os.path.join('logs', 'console_output.log'), input_file=self.input_video, model_path=self.ball_model_path, log_type="debug")
         self.debug_logger.debug("[ShotDetector] debug_logger now references ShotLogger's initialized logger.")
         # ...existing code...
         # Uncomment this line to accelerate inference. Note that this may cause errors in some setups.
         #self.model.half()
         
         # Initialize class names for both models
-        self.class_names = ['Basketball', 'Basketball Hoop']  # Default for custom models
+        self.class_names = ['Basketball', 'Basketball Hoop', 'Rim']  # Extended with Rim detection
 
         # Get class names from both models
         if hasattr(self.ball_model, 'names'):
@@ -537,8 +93,14 @@ class ShotDetector:
             # Filter and show only hoop-related classes that will be used for detection
             hoop_classes = [cls for cls in self.hoop_model_classes.values()
                            if 'hoop' in cls.lower() or 'rim' in cls.lower() or cls.lower() == 'basketball hoop']
+            
+            # 显示所有支持的篮筐类别，包括代码中硬编码的类别
+            supported_hoop_classes = ["Basketball Hoop", "hoop", "Rim"] + hoop_classes
+            # 去重
+            supported_hoop_classes = list(set(supported_hoop_classes))
+            
             print(f"📋 Hoop model classes: {list(self.hoop_model_classes.values())}")
-            print(f"🎯 Active hoop detection classes: {hoop_classes}")
+            print(f"🎯 Active hoop detection classes: {supported_hoop_classes}")
         else:
             self.hoop_model_classes = {0: "Basketball", 1: "Basketball Hoop"}
 
@@ -616,6 +178,54 @@ class ShotDetector:
         # e.g., trajectory continuity, X position bounds, etc.
 
         return True
+        
+    def predict_ball_position_from_trajectory(self, current_frame):
+        """
+        预测当前帧中球的位置，基于历史轨迹数据拟合
+        
+        Args:
+            current_frame: 当前帧号
+            
+        Returns:
+            tuple: 预测的球位置 (x, y) 或 None（如果历史数据不足）
+        """
+        # 需要至少3个历史点来进行有效的轨迹拟合
+        if len(self.ball_pos) < 3:
+            self.debug_logger.debug(f"历史轨迹点不足，无法进行拟合预测: {len(self.ball_pos)} 点")
+            return None
+            
+        # 获取最近的N个历史点（最多10个点）
+        recent_history = self.ball_pos[-10:]
+        
+        # 提取坐标和帧号
+        x_coords = [pos[0][0] for pos in recent_history]
+        y_coords = [pos[0][1] for pos in recent_history]
+        frames = [pos[1] for pos in recent_history]
+        
+        # 检查是否有足够的不同帧
+        if len(set(frames)) < 3:
+            self.debug_logger.debug(f"历史轨迹中不同帧数不足，无法进行拟合预测")
+            return None
+            
+        try:
+            # 对X坐标进行多项式拟合（2阶）
+            x_poly = np.polyfit(frames, x_coords, 2)
+            x_poly_func = np.poly1d(x_poly)
+            
+            # 对Y坐标进行多项式拟合（2阶）
+            y_poly = np.polyfit(frames, y_coords, 2)
+            y_poly_func = np.poly1d(y_poly)
+            
+            # 预测当前帧的位置
+            predicted_x = x_poly_func(current_frame)
+            predicted_y = y_poly_func(current_frame)
+            
+            self.debug_logger.debug(f"轨迹拟合预测位置: ({predicted_x:.1f}, {predicted_y:.1f}) 在帧 {current_frame}")
+            
+            return (predicted_x, predicted_y)
+        except Exception as e:
+            self.debug_logger.warning(f"轨迹拟合预测失败: {e}")
+            return None
 
     def select_best_detections_for_frame(self, current_frame_balls, current_frame_hoops):
         """
@@ -640,9 +250,55 @@ class ShotDetector:
 
         if not quality_balls or not quality_hoops:
             return None, None
+            
+        # 尝试使用轨迹拟合进行筛选（对每个球都进行检验）
+        predicted_position = self.predict_ball_position_from_trajectory(self.frame_count)
+        
+        if predicted_position:
+            # 设置基础偏差阈值（像素）
+            base_deviation_threshold = 50  # 基础阈值
+            
+            # 获取拟合数据的帧序列最大值
+            recent_history = self.ball_pos[-10:]
+            frames = [pos[1] for pos in recent_history]
+            max_history_frame = max(frames) if frames else self.frame_count
+            
+            # 计算当前帧与拟合数据帧序列最大值的差值，并动态调整阈值
+            frame_diff = abs(self.frame_count - max_history_frame)
+            # 每帧差异增加基础阈值的比例
+            deviation_threshold = base_deviation_threshold * (1 + frame_diff)
+            
+            self.debug_logger.debug(f"动态偏差阈值: {deviation_threshold:.1f}px (基础阈值: {base_deviation_threshold}px, 帧差值: {frame_diff})")
+            
+            # 计算每个球与预测位置的偏差
+            for ball in quality_balls:
+                ball_center = ball['center']
+                deviation = ((ball_center[0] - predicted_position[0])**2 + 
+                            (ball_center[1] - predicted_position[1])**2)**0.5
+                ball['trajectory_deviation'] = deviation
+                
+                self.debug_logger.debug(f"球 ({ball_center[0]:.1f}, {ball_center[1]:.1f}) 与预测位置偏差: {deviation:.1f}px")
+            
+            # 过滤掉偏差超过阈值的球
+            trajectory_filtered_balls = [ball for ball in quality_balls 
+                                       if ball.get('trajectory_deviation', float('inf')) <= deviation_threshold]
+            
+            if trajectory_filtered_balls:
+                self.debug_logger.debug(f"轨迹筛选后剩余 {len(trajectory_filtered_balls)}/{len(quality_balls)} 个球")
+                # 从轨迹筛选后的球中选择置信度最高的
+                best_ball = max(trajectory_filtered_balls, key=lambda x: x['confidence'])
+                self.debug_logger.debug(f"选择基于轨迹筛选的最佳球: 置信度={best_ball['confidence']:.2f}, 偏差={best_ball.get('trajectory_deviation', 'N/A'):.1f}px")
+            else:
+                # 如果所有球都被轨迹筛选过滤掉，则丢弃所有球
+                self.debug_logger.debug(f"所有球都超出轨迹偏差阈值，丢弃所有球")
+                self.debug_logger.debug(f"最大偏差: {max([ball.get('trajectory_deviation', float('inf')) for ball in quality_balls]):.1f}px, 动态阈值: {deviation_threshold:.1f}px (基础阈值: {base_deviation_threshold}px, 帧差值: {frame_diff})")
+                best_ball = None
+        else:
+            # 无法进行轨迹预测时，使用置信度最高的球
+            self.debug_logger.debug(f"无法进行轨迹预测，使用置信度最高的球")
+            best_ball = max(quality_balls, key=lambda x: x['confidence'])
 
-        # Select highest confidence detections
-        best_ball = max(quality_balls, key=lambda x: x['confidence'])
+        # 选择置信度最高的篮筐
         best_hoop = max(quality_hoops, key=lambda x: x['confidence'])
 
         return best_ball, best_hoop
@@ -663,6 +319,34 @@ class ShotDetector:
         self.debug_logger.debug(f"🔥 FORCE DEBUG: process_frame_detections called for frame {self.frame_count}")
         self.debug_logger.debug(f"🔥 Input: {len(current_frame_balls)} balls, {len(current_frame_hoops)} hoops")
 
+        # Check for significant hoop position/size changes (possible video cut)
+        if len(self.hoop_pos) > 1 and len(current_frame_hoops) > 0:
+            last_hoop = self.hoop_pos[-1]
+            current_hoop = max(current_frame_hoops, key=lambda x: x['confidence'])
+            
+            # Calculate position and size differences
+            pos_diff = math.sqrt((last_hoop[0][0] - current_hoop['center'][0])**2 + 
+                                (last_hoop[0][1] - current_hoop['center'][1])**2)
+            size_diff = abs(last_hoop[2] - current_hoop['size']['width']) + \
+                       abs(last_hoop[3] - current_hoop['size']['height'])
+            
+            # Thresholds for significant change (adjust as needed)
+            pos_threshold = 0.5 * math.sqrt(last_hoop[2]**2 + last_hoop[3]**2)
+            size_threshold = 0.5 * (last_hoop[2] + last_hoop[3])
+            
+            if pos_diff > pos_threshold or size_diff > size_threshold:
+                self.debug_logger.warning(f"⚠️ 检测到篮筐位置/大小显著变化 (位置差: {pos_diff:.1f}px > {pos_threshold:.1f}px 或大小差: {size_diff:.1f}px > {size_threshold:.1f}px)，可能是视频剪辑，重置跟踪数据")
+                self.ball_pos = []
+                self.hoop_pos = []
+                self.person_pos = []
+                self.up = False
+                self.down = False
+                self.up_frame = 0
+                self.down_frame = 0
+                self.selected_ball = None
+                self.selected_hoop = None
+                return
+        
         # Select best detections from current frame
         selected_ball_data, selected_hoop_data = self.select_best_detections_for_frame(
             current_frame_balls, current_frame_hoops
@@ -1211,13 +895,13 @@ class ShotDetector:
         hoop_y = selected_hoop[0][1]
         hoop_h = selected_hoop[3]
 
-        # Calculate DOWN threshold (below hoop center + 0.5 * height)
-        down_threshold = hoop_y + 0.5 * hoop_h
+        # Calculate DOWN threshold (using hoop's top edge)
+        down_threshold = hoop_y - 0.5 * hoop_h
 
         is_in_down_region = ball_y > down_threshold
 
         if is_in_down_region:
-            print(f"DOWN detected - Frame {selected_ball[1]}: ball_y({ball_y}) > threshold({down_threshold:.0f})")
+            print(f"DOWN detected - Frame {selected_ball[1]}: ball_y({ball_y}) > threshold({down_threshold:.0f}) (hoop top edge)")
 
         return is_in_down_region
 
@@ -1324,9 +1008,9 @@ class ShotDetector:
             cv2.putText(self.frame, "UP", (up_x1 + 5, up_y1 + 25),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
 
-        # 🔧 CORRECT: Draw DOWN threshold line (following original utils.py design)
-        # DOWN detection is a threshold line, not a region - respect original design
-        down_threshold_y = int(hoop_y + 0.5 * hoop_h)
+        # 🔧 MODIFIED: Draw DOWN threshold line at the top of the hoop (rim top)
+        # Use the same Y coordinate as detect_down function (hoop_y - 0.5 * hoop_h)
+        down_threshold_y = int(hoop_y - 0.5 * hoop_h)  # Rim top position
         if 0 <= down_threshold_y < frame_h:
             # Draw threshold line with purple color (BGR: 128, 0, 128)
             cv2.line(self.frame, (down_x1, down_threshold_y), (down_x2, down_threshold_y), (128, 0, 128), 4)
