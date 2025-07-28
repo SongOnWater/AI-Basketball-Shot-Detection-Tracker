@@ -10,7 +10,7 @@ class DebugLogger:
     """
     调试日志记录器，用于记录控制台输出(纯文本格式)
     """
-    def __init__(self, debug_log_file=None, input_file=None, model_path=None, log_type="debug"):
+    def __init__(self, debug_log_file=None, input_file=None, model_path=None, log_type="debug", console_enabled=True):
         if input_file and model_path:
             input_name = os.path.splitext(os.path.basename(input_file))[0]
             model_name = os.path.splitext(os.path.basename(model_path))[0]
@@ -20,7 +20,7 @@ class DebugLogger:
             self.debug_log_file = debug_log_file or os.path.join('logs', 'debug_output.txt')
         
         self._log_file = None
-        self._debug_enabled = True  # 启用控制台输出
+        self._console_enabled = console_enabled  # 控制台输出开关
 
         if self.debug_log_file:
             os.makedirs(os.path.dirname(self.debug_log_file), exist_ok=True)
@@ -28,23 +28,32 @@ class DebugLogger:
 
     def debug(self, message):
         """记录调试信息"""
-        if self._debug_enabled:
-            self._log('DEBUG', message)
+        self._log('DEBUG', message, console_output=False)
+
+    def debug_file_only(self, message):
+        """仅写入文件的调试信息"""
+        self._log('DEBUG', message, console_output=False)
+
+    def console(self, message):
+        """记录控制台和文件都输出的重要信息"""
+        self._log('CONSOLE', message, console_output=True)
 
     def info(self, message):
         """记录一般信息"""
-        self._log('INFO', message)
+        self._log('INFO', message, console_output=True)
 
     def warning(self, message):
         """记录警告信息"""
-        self._log('WARNING', message)
+        self._log('WARNING', message, console_output=True)
 
-    def _log(self, level, message):
+    def _log(self, level, message, console_output=True):
         """内部日志记录方法"""
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
         log_entry = f"[{timestamp}] [{level}] {message}\n"
-        print(log_entry, end='')
-
+        
+        if console_output and self._console_enabled:
+            print(log_entry, end='')
+        
         if self._log_file:
             self._log_file.write(log_entry)
 

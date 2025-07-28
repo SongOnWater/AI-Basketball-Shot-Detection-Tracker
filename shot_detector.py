@@ -73,7 +73,7 @@ class ShotDetector:
         self.logger = ShotLogger(input_file=self.input_video, model_path=self.ball_model_path, log_type="frame")
         # 关键：让 ShotDetector 直接引用 ShotLogger 的 debug_logger
         self.debug_logger = DebugLogger(debug_log_file=os.path.join('logs', 'console_output.log'), input_file=self.input_video, model_path=self.ball_model_path, log_type="debug")
-        self.debug_logger.debug("[ShotDetector] debug_logger now references ShotLogger's initialized logger.")
+        self.debug_logger.debug_file_only("[ShotDetector] debug_logger now references ShotLogger's initialized logger.")
         # ...existing code...
         # Uncomment this line to accelerate inference. Note that this may cause errors in some setups.
         #self.model.half()
@@ -191,7 +191,7 @@ class ShotDetector:
         """
         # 需要至少3个历史点来进行有效的轨迹拟合
         if len(self.ball_pos) < 3:
-            self.debug_logger.debug(f"历史轨迹点不足，无法进行拟合预测: {len(self.ball_pos)} 点")
+            self.debug_logger.debug_file_only(f"历史轨迹点不足，无法进行拟合预测: {len(self.ball_pos)} 点")
             return None
             
         # 获取最近的N个历史点（最多10个点）
@@ -204,7 +204,7 @@ class ShotDetector:
         
         # 检查是否有足够的不同帧
         if len(set(frames)) < 3:
-            self.debug_logger.debug(f"历史轨迹中不同帧数不足，无法进行拟合预测")
+            self.debug_logger.debug_file_only(f"历史轨迹中不同帧数不足，无法进行拟合预测")
             return None
             
         try:
@@ -220,7 +220,7 @@ class ShotDetector:
             predicted_x = x_poly_func(current_frame)
             predicted_y = y_poly_func(current_frame)
             
-            self.debug_logger.debug(f"轨迹拟合预测位置: ({predicted_x:.1f}, {predicted_y:.1f}) 在帧 {current_frame}")
+            self.debug_logger.debug_file_only(f"轨迹拟合预测位置: ({predicted_x:.1f}, {predicted_y:.1f}) 在帧 {current_frame}")
             
             return (predicted_x, predicted_y)
         except Exception as e:
@@ -268,7 +268,7 @@ class ShotDetector:
             # 每帧差异增加基础阈值的比例
             deviation_threshold = base_deviation_threshold * (1 + frame_diff)
             
-            self.debug_logger.debug(f"动态偏差阈值: {deviation_threshold:.1f}px (基础阈值: {base_deviation_threshold}px, 帧差值: {frame_diff})")
+            self.debug_logger.debug_file_only(f"动态偏差阈值: {deviation_threshold:.1f}px (基础阈值: {base_deviation_threshold}px, 帧差值: {frame_diff})")
             
             # 计算每个球与预测位置的偏差
             for ball in quality_balls:
@@ -277,25 +277,25 @@ class ShotDetector:
                             (ball_center[1] - predicted_position[1])**2)**0.5
                 ball['trajectory_deviation'] = deviation
                 
-                self.debug_logger.debug(f"球 ({ball_center[0]:.1f}, {ball_center[1]:.1f}) 与预测位置偏差: {deviation:.1f}px")
+                self.debug_logger.debug_file_only(f"球 ({ball_center[0]:.1f}, {ball_center[1]:.1f}) 与预测位置偏差: {deviation:.1f}px")
             
             # 过滤掉偏差超过阈值的球
             trajectory_filtered_balls = [ball for ball in quality_balls 
                                        if ball.get('trajectory_deviation', float('inf')) <= deviation_threshold]
             
             if trajectory_filtered_balls:
-                self.debug_logger.debug(f"轨迹筛选后剩余 {len(trajectory_filtered_balls)}/{len(quality_balls)} 个球")
+                self.debug_logger.debug_file_only(f"轨迹筛选后剩余 {len(trajectory_filtered_balls)}/{len(quality_balls)} 个球")
                 # 从轨迹筛选后的球中选择置信度最高的
                 best_ball = max(trajectory_filtered_balls, key=lambda x: x['confidence'])
-                self.debug_logger.debug(f"选择基于轨迹筛选的最佳球: 置信度={best_ball['confidence']:.2f}, 偏差={best_ball.get('trajectory_deviation', 'N/A'):.1f}px")
+                self.debug_logger.debug_file_only(f"选择基于轨迹筛选的最佳球: 置信度={best_ball['confidence']:.2f}, 偏差={best_ball.get('trajectory_deviation', 'N/A'):.1f}px")
             else:
                 # 如果所有球都被轨迹筛选过滤掉，则丢弃所有球
-                self.debug_logger.debug(f"所有球都超出轨迹偏差阈值，丢弃所有球")
-                self.debug_logger.debug(f"最大偏差: {max([ball.get('trajectory_deviation', float('inf')) for ball in quality_balls]):.1f}px, 动态阈值: {deviation_threshold:.1f}px (基础阈值: {base_deviation_threshold}px, 帧差值: {frame_diff})")
+                self.debug_logger.debug_file_only(f"所有球都超出轨迹偏差阈值，丢弃所有球")
+                self.debug_logger.debug_file_only(f"最大偏差: {max([ball.get('trajectory_deviation', float('inf')) for ball in quality_balls]):.1f}px, 动态阈值: {deviation_threshold:.1f}px (基础阈值: {base_deviation_threshold}px, 帧差值: {frame_diff})")
                 best_ball = None
         else:
             # 无法进行轨迹预测时，使用置信度最高的球
-            self.debug_logger.debug(f"无法进行轨迹预测，使用置信度最高的球")
+            self.debug_logger.debug_file_only(f"无法进行轨迹预测，使用置信度最高的球")
             best_ball = max(quality_balls, key=lambda x: x['confidence'])
 
         # 选择置信度最高的篮筐
@@ -316,8 +316,8 @@ class ShotDetector:
         self.current_frame_balls = current_frame_balls
         self.current_frame_hoops = current_frame_hoops
 
-        self.debug_logger.debug(f"🔥 FORCE DEBUG: process_frame_detections called for frame {self.frame_count}")
-        self.debug_logger.debug(f"🔥 Input: {len(current_frame_balls)} balls, {len(current_frame_hoops)} hoops")
+        self.debug_logger.debug_file_only(f"🔥 FORCE DEBUG: process_frame_detections called for frame {self.frame_count}")
+        self.debug_logger.debug_file_only(f"🔥 Input: {len(current_frame_balls)} balls, {len(current_frame_hoops)} hoops")
 
         # Check for significant hoop position/size changes (possible video cut)
         if len(self.hoop_pos) > 1 and len(current_frame_hoops) > 0:
