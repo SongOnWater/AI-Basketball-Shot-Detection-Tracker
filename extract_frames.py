@@ -35,13 +35,13 @@ def extract_frames(video_path, output_dir, frames=None, frame_range=None):
     for idx in frame_indices:
         cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
         ret, frame = cap.read()
+        vidx=idx+1
         if not ret:
-            print(f"Warning: Could not read frame {idx}")
+            print(f"Warning: Could not read frame {vidx}")
             continue
-        out_path = os.path.join(output_dir, f"frame_{idx:05d}.jpg")
+        out_path = os.path.join(output_dir, f"frame_{vidx:05d}.jpg")
         cv2.imwrite(out_path, frame)
         print(f"Saved {out_path}")
-
     cap.release()
     print("Done.")
 

@@ -536,7 +536,7 @@ class ShotDetector:
             self.hoop_model_classes = self.hoop_model.names
             # Filter and show only hoop-related classes that will be used for detection
             hoop_classes = [cls for cls in self.hoop_model_classes.values()
-                           if 'hoop' in cls.lower() or cls.lower() == 'basketball hoop']
+                           if 'hoop' in cls.lower() or 'rim' in cls.lower() or cls.lower() == 'basketball hoop']
             print(f"📋 Hoop model classes: {list(self.hoop_model_classes.values())}")
             print(f"🎯 Active hoop detection classes: {hoop_classes}")
         else:
@@ -937,6 +937,7 @@ class ShotDetector:
 
             # Process hoop detections from custom model
             for r in hoop_results:
+
                 boxes = r.boxes
                 if boxes is not None:
                     for box in boxes:
@@ -957,10 +958,13 @@ class ShotDetector:
 
                         center = (int(x1 + w / 2), int(y1 + h / 2))
 
-                        # Check if this is a basketball hoop
-                        is_hoop = (current_class in ["Basketball Hoop", "hoop"] or
-                                  "hoop" in current_class.lower() or
-                                  (current_class.lower() == "basketball hoop"))
+                        # Check if this is a basketball hoop or rim
+                        is_hoop = (
+                            current_class in ["Basketball Hoop", "hoop", "Rim"] or
+                            "hoop" in current_class.lower() or
+                            "rim" in current_class.lower() or
+                            (current_class.lower() == "basketball hoop")
+                        )
 
                         if is_hoop:
                             current_frame_hoops.append({
