@@ -2,16 +2,70 @@
 import cv2
 import os
 import argparse
+import subprocess
+import shutil
+import sys
+
+def check_ffmpeg():
+    """检查系统中是否安装了ffmpeg"""
+    try:
+        result = subprocess.run(['ffmpeg', '-version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+
+def extract_frames_with_ffmpeg(video_path, output_dir, frames=None, frame_range=None):
+    """使用ffmpeg抽取视频帧"""
+    # 确保输出目录存在
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 构建ffmpeg命令
+    if frames is not None:
+        # 如果指定了特定帧，我们需要为每一帧单独运行ffmpeg
+        for idx in sorted(set(frames)):
+            vidx = idx + 1  # 调整为1-based索引
+            out_path = os.path.join(output_dir, f"frame_{vidx:05d}.jpg")
+            # ffmpeg -i video.mp4 -vf "select=eq(n\,10)" -vframes 1 output.jpg
+            cmd = [
+                'ffmpeg', '-i', video_path, 
+                '-vf', f'select=eq(n\\,{idx})', 
+                '-vframes', '1', 
+                '-q:v', '1',  # 高质量
+                out_path
+            ]
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            print(f"Saved {out_path}")
+    else:
+        # 如果是提取所有帧或一个范围内的帧
+        if frame_range is not None:
+            start, end = frame_range
+            # ffmpeg -i video.mp4 -vf "select=between(n\,100\,200)" -vsync 0 output_%05d.jpg
+            filter_expr = f'select=between(n\\,{start}\\,{end-1})'
+        else:
+            filter_expr = 'select=1'  # 选择所有帧
+        
+        cmd = [
+            'ffmpeg', '-i', video_path,
+            '-vf', filter_expr,
+            '-vsync', '0',
+            '-q:v', '1',  # 高质量
+            os.path.join(output_dir, f"frame_%05d.jpg")
+        ]
+        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        print(f"Extracted frames saved to {output_dir}")
+    
+    print("Done.")
 
 def extract_frames(video_path, output_dir, frames=None, frame_range=None):
-
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        print(f"Error: Cannot open video {video_path}")
-        return
-
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
+    """
+    从视频中提取帧。如果系统中有ffmpeg，则使用ffmpeg；否则使用OpenCV。
+    
+    Args:
+        video_path: 视频文件路径
+        output_dir: 输出目录路径
+        frames: 要提取的特定帧索引列表
+        frame_range: 要提取的帧范围 (start, end)
+    """
     # --- 自动生成输出目录名 ---
     if output_dir is None:
         base = os.path.splitext(os.path.basename(video_path))[0]
@@ -22,6 +76,24 @@ def extract_frames(video_path, output_dir, frames=None, frame_range=None):
             output_dir = f"{orig_output_dir}_{count}"
             count += 1
     os.makedirs(output_dir, exist_ok=True)
+    
+    # 检查是否有ffmpeg
+    has_ffmpeg = check_ffmpeg()
+    if has_ffmpeg:
+        print("检测到ffmpeg，使用ffmpeg提取帧...")
+        extract_frames_with_ffmpeg(video_path, output_dir, frames, frame_range)
+    else:
+        print("未检测到ffmpeg，使用OpenCV提取帧...")
+        extract_frames_with_opencv(video_path, output_dir, frames, frame_range)
+
+def extract_frames_with_opencv(video_path, output_dir, frames=None, frame_range=None):
+    """使用OpenCV提取视频帧"""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print(f"Error: Cannot open video {video_path}")
+        return
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     # Determine which frames to extract
     if frames is not None:
