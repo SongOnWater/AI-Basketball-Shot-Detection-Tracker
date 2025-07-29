@@ -15,6 +15,7 @@ import logging
 import os
 
 from logging_utils import DebugLogger, ShotLogger
+from object_class_mapper import object_class_mapper
 
 
 class ShotDetector:
@@ -32,11 +33,26 @@ class ShotDetector:
         self.ball_model_path = ball_model_path
         self.ball_model = YOLO(ball_model_path)
         print(f"🏀 Loaded main model: {ball_model_path}")
+        
+        # Print ball model classes
+        self.ball_model_classes = list(self.ball_model.names.values())
+        if 'sports ball' in [cls.lower() for cls in self.ball_model_classes]:
+            print(f"📋 Ball model classes: {len(self.ball_model_classes)} classes (including 'sports ball')")
+        else:
+            print(f"📋 Ball model classes: {len(self.ball_model_classes)} classes: {self.ball_model_classes}")
 
         # Load hoop detection model (use ball model if not specified)
         self.hoop_model_path = hoop_model_path if hoop_model_path else ball_model_path
         self.hoop_model = YOLO(self.hoop_model_path)
         print(f"🏀 Loaded hoop model: {self.hoop_model_path}")
+        
+        # Print hoop model classes
+        self.hoop_model_classes = list(self.hoop_model.names.values())
+        print(f"📋 Hoop model classes: {self.hoop_model_classes}")
+        
+        # Print active hoop detection classes
+        active_hoop_classes = object_class_mapper.get_class_names_for_type('hoop')
+        print(f"🎯 Active hoop detection classes: {active_hoop_classes}")
 
         # Person detection: only load if enabled
         if enable_person_detection:
@@ -74,7 +90,7 @@ class ShotDetector:
         # 关键：让 ShotDetector 直接引用 ShotLogger 的 debug_logger
         self.debug_logger = DebugLogger(debug_log_file=os.path.join('logs', 'console_output.log'), input_file=self.input_video, model_path=self.ball_model_path, log_type="debug")
         self.debug_logger.debug_file_only("[ShotDetector] debug_logger now references ShotLogger's initialized logger.")
-        # ...existing code...
+
         # Uncomment this line to accelerate inference. Note that this may cause errors in some setups.
         #self.model.half()
         
@@ -148,6 +164,21 @@ class ShotDetector:
 
         # Ball filtering parameters
         self.min_ball_area = min_ball_area  # Minimum ball area in pixels (width * height)
+
+
+    def clean_motion(self):
+        """
+        Clean up motion data by removing inaccurate data points
+        """
+        # Clean ball position data
+        self.ball_pos = clean_ball_pos(self.ball_pos, self.frame_count)
+        
+        # Clean hoop position data
+        self.hoop_pos = clean_hoop_pos(self.hoop_pos)
+        
+        # Clean person position data if person detection is enabled
+        if self.enable_person_detection and len(self.person_pos) > 30:
+            self.person_pos.pop(0)
 
 
     def is_reasonable_ball_position(self, ball_data, frame_height=None):
@@ -531,32 +562,10 @@ class ShotDetector:
 
 
 
-            # ...existing code...
-
             # Collect all detections in current frame for logging
             current_frame_balls = []
             current_frame_hoops = []
             current_frame_persons = []
-
-            # ...existing code for detection collection...
-
-
-            # ...existing code for detection collection...
-
-
-            # === 每帧详细debug输出（必须在所有检测append和selected_ball/hoop赋值后） ===
-            # 先处理main/hoop/person detection append...
-            # 再选出selected_ball/selected_hoop（在process_frame_detections前赋值）
-            # 这里每帧都写入debug log
-            self.debug_logger.debug(f"Frame {self.frame_count}: balls={len(current_frame_balls)}, hoops={len(current_frame_hoops)}, persons={len(current_frame_persons)}")
-            if hasattr(self, 'selected_ball') and self.selected_ball:
-                self.debug_logger.debug(f"  Selected ball: pos={self.selected_ball[0]}, conf={self.selected_ball[4]:.2f}")
-            else:
-                self.debug_logger.debug(f"  Selected ball: None")
-            if hasattr(self, 'selected_hoop') and self.selected_hoop:
-                self.debug_logger.debug(f"  Selected hoop: pos={self.selected_hoop[0]}, conf={self.selected_hoop[4]:.2f}")
-            else:
-                self.debug_logger.debug(f"  Selected hoop: None")
 
             # Process main model detections (ball and person if shared model)
             for r in main_results:
@@ -580,12 +589,11 @@ class ShotDetector:
 
                         center = (int(x1 + w / 2), int(y1 + h / 2))
 
-                        # Check if this is a sports ball (basketball)
-                        is_ball = (current_class in ["Basketball", "sports ball"] or
-                                  "ball" in current_class.lower())
+                        # Check if this is a sports ball (basketball) using unified mapping
+                        is_ball = object_class_mapper.is_object_type(current_class, 'ball')
 
                         # Check if this is a person (when using shared model)
-                        is_person = (current_class.lower() == "person")
+                        is_person = object_class_mapper.is_object_type(current_class, 'person')
 
                         if is_ball:
                             # Calculate ball area for size filtering
@@ -642,13 +650,8 @@ class ShotDetector:
 
                         center = (int(x1 + w / 2), int(y1 + h / 2))
 
-                        # Check if this is a basketball hoop or rim
-                        is_hoop = (
-                            current_class in ["Basketball Hoop", "hoop", "Rim"] or
-                            "hoop" in current_class.lower() or
-                            "rim" in current_class.lower() or
-                            (current_class.lower() == "basketball hoop")
-                        )
+                        # Check if this is a basketball hoop or rim using unified mapping
+                        is_hoop = object_class_mapper.is_object_type(current_class, 'hoop')
 
                         if is_hoop:
                             current_frame_hoops.append({
@@ -689,8 +692,8 @@ class ShotDetector:
 
                         center = (int(x1 + w / 2), int(y1 + h / 2))
 
-                        # Check if this is a person
-                        is_person = (current_class.lower() == "person")
+                        # Check if this is a person using unified mapping
+                        is_person = object_class_mapper.is_object_type(current_class, 'person')
 
                         if is_person and self.enable_person_detection and not self.use_shared_model and conf > 0.3:
                             # Only add to raw_person_detections if using separate model and person detection is enabled
@@ -810,260 +813,38 @@ class ShotDetector:
         self.debug_logger.close()
         print(f"\n📝 调试日志已保存到: {self.debug_logger.debug_log_file}")
 
-    def clean_motion(self):
-        # Clean and display ball motion
-        self.ball_pos = clean_ball_pos(self.ball_pos, self.frame_count)
-        for i in range(0, len(self.ball_pos)):
-            cv2.circle(self.frame, self.ball_pos[i][0], 2, (0, 0, 255), 2)
+    def display_score(self):
+        # Add text
+        text = str(self.makes) + " / " + str(self.attempts)
+        cv2.putText(self.frame, text, (50, 125), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 255, 255), 6)
+        cv2.putText(self.frame, text, (50, 125), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 0, 0), 3)
 
-        # Clean hoop motion and display current hoop center
-        if len(self.hoop_pos) > 1:
-            self.hoop_pos = clean_hoop_pos(self.hoop_pos)
+        # Draw UP/DOWN regions for visualization
+        self.draw_detection_regions()
 
-        # 🔧 SYNC FIX: Draw hoop center using synchronized drawing logic
-        should_draw, hoop_data, data_source = self.should_draw_hoop_and_regions()
-        if should_draw and hoop_data:
-            hoop_center = hoop_data[0]
-            cv2.circle(self.frame, hoop_center, 2, (128, 128, 0), 2)
-            self.debug_logger.debug(f"🎨 Drawing hoop center using {data_source}")
+        # Add overlay text for shot result if it exists
+        if hasattr(self, 'overlay_text'):
+            # Calculate text size to position it at the right top corner
+            (text_width, text_height), _ = cv2.getTextSize(self.overlay_text, cv2.FONT_HERSHEY_SIMPLEX, 3, 6)
+            text_x = self.frame.shape[1] - text_width - 40  # Right alignment with some margin
+            text_y = 100  # Top margin
 
-    def detect_up_with_selected(self, selected_ball, selected_hoop):
-        """
-        Detect UP state using synchronized selected data from same frame
+            # Display overlay text with color (overlay_color)
+            cv2.putText(self.frame, self.overlay_text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 3,
+                        self.overlay_color, 6)
 
-        Args:
-            selected_ball: Ball detection tuple from current frame
-            selected_hoop: Hoop detection tuple from current frame
-
-        Returns:
-            bool: True if ball is in UP region relative to hoop
-        """
-        if not selected_ball or not selected_hoop:
-            self.debug_logger.debug(f"🚫 UP detection skipped - missing data: ball={bool(selected_ball)}, hoop={bool(selected_hoop)}")
-            return False
-
-        # Ensure same frame (double safety check)
-        if selected_ball[1] != selected_hoop[1]:
-            self.debug_logger.warning(f"⚠️ Frame mismatch in UP detection - ball:{selected_ball[1]}, hoop:{selected_hoop[1]}")
-            return False
-
-        # Extract positions and dimensions
-        ball_x, ball_y = selected_ball[0]
-        hoop_x, hoop_y = selected_hoop[0]
-        hoop_w, hoop_h = selected_hoop[2], selected_hoop[3]
-
-        # Calculate UP region boundaries - STRICTER DEFINITION
-        # Based on observation that current definition is too loose
-        x1 = hoop_x - 3 * hoop_w      # Reduced from 4x to 3x width
-        x2 = hoop_x + 3 * hoop_w      # Reduced from 4x to 3x width
-        y1 = hoop_y - 1.5 * hoop_h    # Reduced from 2x to 1.5x height
-        y2 = hoop_y - 0.8 * hoop_h    # Increased from 0.5x to 0.8x height (smaller region)
-
-        is_in_up_region = x1 < ball_x < x2 and y1 < ball_y < y2
-
-        self.debug_logger.debug(f"🔍 UP detection Frame {selected_ball[1]}:")
-        self.debug_logger.debug(f"  Ball: ({ball_x}, {ball_y})")
-        self.debug_logger.debug(f"  Hoop: ({hoop_x}, {hoop_y}) {hoop_w}×{hoop_h}")
-        self.debug_logger.debug(f"  UP region: X({x1:.0f}-{x2:.0f}) Y({y1:.0f}-{y2:.0f})")
-        self.debug_logger.debug(f"  X check: {x1:.0f} < {ball_x} < {x2:.0f} = {x1 < ball_x < x2}")
-        self.debug_logger.debug(f"  Y check: {y1:.0f} < {ball_y} < {y2:.0f} = {y1 < ball_y < y2}")
-        self.debug_logger.debug(f"  Result: {'✅ UP detected' if is_in_up_region else '❌ Not in UP region'}")
-
-        return is_in_up_region
-
-    def detect_down_with_selected(self, selected_ball, selected_hoop):
-        """
-        Detect DOWN state using synchronized selected data from same frame
-
-        Args:
-            selected_ball: Ball detection tuple from current frame
-            selected_hoop: Hoop detection tuple from current frame
-
-        Returns:
-            bool: True if ball is in DOWN region relative to hoop
-        """
-        if not selected_ball or not selected_hoop:
-            return False
-
-        # Ensure same frame (double safety check)
-        if selected_ball[1] != selected_hoop[1]:
-            print(f"Warning: Frame mismatch in DOWN detection - ball:{selected_ball[1]}, hoop:{selected_hoop[1]}")
-            return False
-
-        # Extract positions and dimensions
-        ball_y = selected_ball[0][1]
-        hoop_y = selected_hoop[0][1]
-        hoop_h = selected_hoop[3]
-
-        # Calculate DOWN threshold (using hoop's top edge)
-        down_threshold = hoop_y - 0.5 * hoop_h
-
-        is_in_down_region = ball_y > down_threshold
-
-        if is_in_down_region:
-            print(f"DOWN detected - Frame {selected_ball[1]}: ball_y({ball_y}) > threshold({down_threshold:.0f}) (hoop top edge)")
-
-        return is_in_down_region
-
-    def should_draw_hoop_and_regions(self):
-        """
-        Determine if hoop and UP/DOWN regions should be drawn
-        Returns tuple: (should_draw, hoop_data, data_source)
-
-        🔧 CRITICAL SYNC FIX: Follow the EXACT same logic as hoop detection rectangle drawing
-        Only draw when hoop detection rectangle (cornerRect) is drawn (conf > 0.4)
-        """
-        hoop_data = None
-        data_source = "none"
-        should_draw = False
-
-        # 🎯 KEY: Check if current frame has hoop detection that would be drawn
-        # This matches the logic in line 889-890: if conf > 0.4: cvzone.cornerRect(...)
-        current_frame_hoop_drawn = False
-        if hasattr(self, 'current_frame_hoops') and self.current_frame_hoops:
-            for hoop in self.current_frame_hoops:
-                if hoop.get('confidence', 0) > 0.4:
-                    current_frame_hoop_drawn = True
-                    break
-
-        # 🔧 CRITICAL FIX: ONLY use current frame hoop data to match cornerRect exactly
-        # This ensures perfect alignment with cyan detection rectangles
-        if current_frame_hoop_drawn:
-            # Find the best hoop that meets drawing criteria (conf > 0.4)
-            valid_hoops = [h for h in self.current_frame_hoops if h.get('confidence', 0) > 0.4]
-            if valid_hoops:
-                best_hoop = max(valid_hoops, key=lambda x: x.get('confidence', 0))
-                hoop_data = (
-                    (best_hoop['center'][0], best_hoop['center'][1]),
-                    self.frame_count,
-                    best_hoop['size']['width'],
-                    best_hoop['size']['height'],
-                    best_hoop['confidence']
-                )
-                data_source = "current_frame_hoop"
-                should_draw = True
-
-                self.debug_logger.debug(f"🎯 PERFECT SYNC: Using current frame hoop conf={best_hoop['confidence']:.2f} center=({best_hoop['center'][0]:.0f},{best_hoop['center'][1]:.0f})")
-            else:
-                self.debug_logger.debug(f"🎯 PERFECT SYNC: No valid hoops (conf > 0.4) in current frame")
-        else:
-            self.debug_logger.debug(f"🎯 PERFECT SYNC: No current frame hoops available")
-
-        # 🚫 REMOVED: All other data sources (detection_hoop_data, selected_hoop, trajectory)
-        # We ONLY use current frame data to match cornerRect drawing exactly
-
-        return should_draw, hoop_data, data_source
+        # Gradually fade out color after shot
+        if self.fade_counter > 0:
+            alpha = 0.2 * (self.fade_counter / self.fade_frames)
+            self.frame = cv2.addWeighted(self.frame, 1 - alpha, np.full_like(self.frame, self.overlay_color), alpha, 0)
+            self.fade_counter -= 1
 
     def draw_detection_regions(self):
         """
-        Draw UP and DOWN detection regions on the frame for visualization
-        UP region: Orange border
-        DOWN region: Purple border
-
-        🔧 SYNC FIX: Only draw regions when hoop should be drawn
-        This ensures perfect synchronization between hoop and region visibility
+        Draw visualization regions for UP/DOWN detection
         """
-        # Use unified drawing logic
-        should_draw, hoop_data, data_source = self.should_draw_hoop_and_regions()
-
-        if not should_draw or not hoop_data:
-            self.debug_logger.debug(f"🎨 Not drawing regions - hoop not visible (should_draw={should_draw})")
-            return
-
-        # Extract hoop position and dimensions
-        hoop_x, hoop_y = hoop_data[0]
-        hoop_w, hoop_h = hoop_data[2], hoop_data[3]
-
-        # 🔧 DEBUG: Log the exact hoop data being used for visualization
-        self.debug_logger.debug(f"🎨 Drawing regions using {data_source}: Hoop({hoop_x:.0f},{hoop_y:.0f}) {hoop_w}×{hoop_h}")
-
-        # Calculate UP region boundaries (same as detect_up_with_selected)
-        up_x1 = int(hoop_x - 3 * hoop_w)
-        up_x2 = int(hoop_x + 3 * hoop_w)
-        up_y1 = int(hoop_y - 1.5 * hoop_h)
-        up_y2 = int(hoop_y - 0.8 * hoop_h)
-
-        # Calculate DOWN region boundaries (simplified visualization)
-        down_x1 = int(hoop_x - 1 * hoop_w)
-        down_x2 = int(hoop_x + 1 * hoop_w)
-        down_y1 = int(hoop_y + 0.5 * hoop_h)  # DOWN threshold line
-        down_y2 = int(hoop_y + 2 * hoop_h)    # Extended down for visualization
-
-        # Ensure coordinates are within frame bounds
-        frame_h, frame_w = self.frame.shape[:2]
-        up_x1 = max(0, min(up_x1, frame_w))
-        up_x2 = max(0, min(up_x2, frame_w))
-        up_y1 = max(0, min(up_y1, frame_h))
-        up_y2 = max(0, min(up_y2, frame_h))
-
-        down_x1 = max(0, min(down_x1, frame_w))
-        down_x2 = max(0, min(down_x2, frame_w))
-        down_y1 = max(0, min(down_y1, frame_h))
-        down_y2 = max(0, min(down_y2, frame_h))
-
-        # Draw UP region with orange border (BGR: 0, 165, 255)
-        if up_x2 > up_x1 and up_y2 > up_y1:
-            cv2.rectangle(self.frame, (up_x1, up_y1), (up_x2, up_y2), (0, 165, 255), 3)
-            # Add label
-            cv2.putText(self.frame, "UP", (up_x1 + 5, up_y1 + 25),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
-
-        # 🔧 MODIFIED: Draw DOWN threshold line at the top of the hoop (rim top)
-        # Use the same Y coordinate as detect_down function (hoop_y - 0.5 * hoop_h)
-        down_threshold_y = int(hoop_y - 0.5 * hoop_h)  # Rim top position
-        if 0 <= down_threshold_y < frame_h:
-            # Draw threshold line with purple color (BGR: 128, 0, 128)
-            cv2.line(self.frame, (down_x1, down_threshold_y), (down_x2, down_threshold_y), (128, 0, 128), 4)
-            # Add label - DOWN text positioned below the line (outside)
-            cv2.putText(self.frame, "DOWN", (down_x1 + 5, down_threshold_y + 25),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (128, 0, 128), 2)
-
-        # Draw ball position with a circle if available
-        if hasattr(self, 'selected_ball') and self.selected_ball:
-            ball_x, ball_y = self.selected_ball[0]
-            ball_x, ball_y = int(ball_x), int(ball_y)
-
-            # Draw ball center with a small circle
-            cv2.circle(self.frame, (ball_x, ball_y), 8, (0, 255, 0), -1)  # Green filled circle
-            cv2.circle(self.frame, (ball_x, ball_y), 12, (255, 255, 255), 2)  # White border
-
-            # Add ball coordinates text
-            cv2.putText(self.frame, f"Ball({ball_x},{ball_y})", (ball_x + 15, ball_y - 15),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-        # 🔧 SYNC FIX: Draw hoop position (synchronized with region drawing)
-        hoop_x, hoop_y = int(hoop_x), int(hoop_y)
-        cv2.circle(self.frame, (hoop_x, hoop_y), 10, (0, 255, 255), -1)  # Yellow filled circle
-        cv2.circle(self.frame, (hoop_x, hoop_y), 15, (255, 255, 255), 2)  # White border
-
-        # Add hoop coordinates text and data source info
-        cv2.putText(self.frame, f"Hoop({hoop_x},{hoop_y})", (hoop_x + 20, hoop_y - 20),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-        # 🔧 DEBUG: Show data source for troubleshooting alignment issues
-        cv2.putText(self.frame, f"Source: {data_source}", (hoop_x + 20, hoop_y + 35),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-
-        self.debug_logger.debug(f"🎨 Synchronized drawing: hoop and regions both visible")
-
-        # Display current UP/DOWN state
-        state_text = f"Frame {self.frame_count}: "
-        if self.up and self.down:
-            state_text += f"UP({self.up_frame}) -> DOWN({self.down_frame})"
-            state_color = (0, 255, 255)  # Yellow
-        elif self.up:
-            state_text += f"UP({self.up_frame})"
-            state_color = (0, 165, 255)  # Orange
-        elif self.down:
-            state_text += f"DOWN({self.down_frame})"
-            state_color = (128, 0, 128)  # Purple
-        else:
-            state_text += "WAITING"
-            state_color = (255, 255, 255)  # White
-
-        # Draw state text at top left
-        cv2.putText(self.frame, state_text, (10, 30),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, state_color, 2)
+        # This is a placeholder - implement actual visualization if needed
+        pass
 
     def shot_detection_with_selected(self):
         """
@@ -1111,6 +892,64 @@ class ShotDetector:
         # Legacy method - kept for compatibility but should not be used
         # New detection uses shot_detection_with_selected()
         pass
+
+    def detect_up_with_selected(self, selected_ball, selected_hoop):
+        """
+        Detect if ball is in UP region using synchronized data
+        
+        Args:
+            selected_ball: Ball detection data from current frame
+            selected_hoop: Hoop detection data from current frame
+            
+        Returns:
+            bool: True if ball is in UP region
+        """
+        # Extract data
+        ball_center = selected_ball[0]
+        ball_x, ball_y = ball_center
+        hoop_center = selected_hoop[0]
+        hoop_x, hoop_y = hoop_center
+        hoop_w = selected_hoop[2]
+        hoop_h = selected_hoop[3]
+
+        # Define UP region (around backboard/hoop area)
+        x1 = hoop_x - 4 * hoop_w
+        x2 = hoop_x + 4 * hoop_w
+        y1 = hoop_y - 2 * hoop_h
+        y2 = hoop_y - 0.5 * hoop_h
+
+        # Check if ball is in UP region
+        is_in_up_region = (x1 < ball_x < x2 and y1 < ball_y < y2)
+        self.debug_logger.debug(f"UP检测 - Frame {self.frame_count}: ball=({ball_x},{ball_y}), region=({x1:.1f},{y1:.1f}) to ({x2:.1f},{y2:.1f}), in_region={is_in_up_region}")
+        
+        return is_in_up_region
+
+    def detect_down_with_selected(self, selected_ball, selected_hoop):
+        """
+        Detect if ball is in DOWN region using synchronized data
+        
+        Args:
+            selected_ball: Ball detection data from current frame
+            selected_hoop: Hoop detection data from current frame
+            
+        Returns:
+            bool: True if ball is in DOWN region
+        """
+        # Extract data
+        ball_center = selected_ball[0]
+        ball_x, ball_y = ball_center
+        hoop_center = selected_hoop[0]
+        hoop_x, hoop_y = hoop_center
+        hoop_h = selected_hoop[3]
+
+        # Define DOWN region (below hoop)
+        rim_top_y = hoop_y - 0.5 * hoop_h
+        
+        # Check if ball is below the rim (in DOWN region)
+        is_in_down_region = (ball_y > rim_top_y)
+        self.debug_logger.debug(f"DOWN检测 - Frame {self.frame_count}: ball_y={ball_y:.1f}, threshold={rim_top_y:.1f} (hoop top edge), in_region={is_in_down_region}")
+        
+        return is_in_down_region
 
     def analyze_shot_attempt(self):
         """Analyze shot attempt when DOWN is detected after UP"""
@@ -1205,33 +1044,6 @@ class ShotDetector:
                 self.overlay_text = "Miss"
                 self.fade_counter = self.fade_frames
 
-    def display_score(self):
-        # Add text
-        text = str(self.makes) + " / " + str(self.attempts)
-        cv2.putText(self.frame, text, (50, 125), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 255, 255), 6)
-        cv2.putText(self.frame, text, (50, 125), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 0, 0), 3)
-
-        # Draw UP/DOWN regions for visualization
-        self.draw_detection_regions()
-
-        # Add overlay text for shot result if it exists
-        if hasattr(self, 'overlay_text'):
-            # Calculate text size to position it at the right top corner
-            (text_width, text_height), _ = cv2.getTextSize(self.overlay_text, cv2.FONT_HERSHEY_SIMPLEX, 3, 6)
-            text_x = self.frame.shape[1] - text_width - 40  # Right alignment with some margin
-            text_y = 100  # Top margin
-
-            # Display overlay text with color (overlay_color)
-            cv2.putText(self.frame, self.overlay_text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 3,
-                        self.overlay_color, 6)
-
-        # Gradually fade out color after shot
-        if self.fade_counter > 0:
-            alpha = 0.2 * (self.fade_counter / self.fade_frames)
-            self.frame = cv2.addWeighted(self.frame, 1 - alpha, np.full_like(self.frame, self.overlay_color), alpha, 0)
-            self.fade_counter -= 1
-
-
 if __name__ == "__main__":
     import argparse
     from model_configs import get_model_config, list_all_configs
@@ -1240,7 +1052,7 @@ if __name__ == "__main__":
     parser.add_argument('--input', type=str, default='video_test_5.mp4', help='Input video file path')
     parser.add_argument('--output', type=str, help='Output video file path')
     parser.add_argument('--ball-model', type=str, default='Yolo-Weights/yolov8x.pt', help='Ball detection model (default: yolov8x.pt)')
-    parser.add_argument('--hoop-model', type=str, default='Yolo-Weights/best.pt', help='Hoop detection model (default: best.pt)')
+    parser.add_argument('--hoop-model', type=str, default= None, help='Hoop detection model (default: best.pt)')
     parser.add_argument('--config', type=str, help='Use predefined model configuration (e.g., high_accuracy, balanced, real_time)')
     parser.add_argument('--list-models', action='store_true', help='List all available model configurations')
     args = parser.parse_args()
