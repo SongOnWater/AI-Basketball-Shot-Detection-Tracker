@@ -86,10 +86,7 @@ class ShotDetector:
         self.output_video = output_video
         self.video_writer = None
 
-        # Initialize two loggers - one for frame data and one for shot data
-        self.frame_logger = ShotLogger(input_file=self.input_video, model_path=self.ball_model_path, log_type="frame")
-        self.shot_logger = ShotLogger(input_file=self.input_video, model_path=self.ball_model_path, log_type="shot")
-        
+        self.logger = ShotLogger(input_file=self.input_video, model_path=self.ball_model_path, log_type="frame")
         # 关键：让 ShotDetector 直接引用 ShotLogger 的 debug_logger
         self.debug_logger = DebugLogger(debug_log_file=os.path.join('logs', 'console_output.log'), input_file=self.input_video, model_path=self.ball_model_path, log_type="debug")
         self.debug_logger.debug_file_only("[ShotDetector] debug_logger now references ShotLogger's initialized logger.")
@@ -529,219 +526,6 @@ class ShotDetector:
 
         return overlap_ratio
 
-    def draw_detection_regions(self):
-        """
-        Draw visualization regions for UP/DOWN detection
-        """
-        # This is a placeholder - implement actual visualization if needed
-        pass
-
-    def shot_detection_with_selected(self):
-        """
-        Perform UP/DOWN detection using synchronized selected data
-        Only called when both ball and hoop are detected in same frame
-        """
-        if not self.selected_ball or not self.selected_hoop:
-            self.debug_logger.debug(f"🚫 Frame {self.frame_count}: Skipping UP/DOWN detection - no synchronized data")
-            return
-
-        self.debug_logger.debug(f"🔍 Frame {self.frame_count}: Performing UP/DOWN detection with synchronized data")
-
-        # 🔧 CRITICAL FIX: Save the exact hoop data used for UP/DOWN detection
-        # This ensures visualization uses the same data as detection logic
-        self.detection_hoop_data = self.selected_hoop
-
-        # UP detection
-        if not self.up:
-            self.debug_logger.debug(f"🔥 FORCE DEBUG: Attempting UP detection for frame {self.frame_count}")
-            up_detected = self.detect_up_with_selected(self.selected_ball, self.selected_hoop)
-            self.debug_logger.debug(f"🔥 UP detection result: {up_detected}")
-            if up_detected:
-                self.up = True
-                self.up_frame = self.frame_count  # Use current frame count
-                self.debug_logger.info(f"🔥 ✅ UP state detected at frame {self.up_frame}")
-            else:
-                self.debug_logger.debug(f"🔥 ❌ Frame {self.frame_count}: Ball not in UP region")
-        else:
-            self.debug_logger.debug(f"🔥 UP already detected at frame {self.up_frame}, skipping UP detection")
-
-        # DOWN detection (only after UP)
-        if self.up and not self.down:
-            down_detected = self.detect_down_with_selected(self.selected_ball, self.selected_hoop)
-            if down_detected:
-                self.down = True
-                self.down_frame = self.frame_count  # Use current frame count
-                self.debug_logger.info(f"✅ DOWN state detected at frame {self.down_frame}")
-
-                # Trigger shot analysis immediately
-                self.analyze_shot_attempt()
-            else:
-                self.debug_logger.debug(f"❌ Frame {self.frame_count}: Ball not in DOWN region")
-
-    def shot_detection(self):
-        # Legacy method - kept for compatibility but should not be used
-        # New detection uses shot_detection_with_selected()
-        pass
-
-    def detect_up_with_selected(self, selected_ball, selected_hoop):
-        """
-        Detect if ball is in UP region using synchronized data
-        
-        Args:
-            selected_ball: Ball detection data from current frame
-            selected_hoop: Hoop detection data from current frame
-            
-        Returns:
-            bool: True if ball is in UP region
-        """
-        # Extract data
-        ball_center = selected_ball[0]
-        ball_x, ball_y = ball_center
-        hoop_center = selected_hoop[0]
-        hoop_x, hoop_y = hoop_center
-        hoop_w = selected_hoop[2]
-        hoop_h = selected_hoop[3]
-
-        # Define UP region (around backboard/hoop area)
-        x1 = hoop_x - 4 * hoop_w
-        x2 = hoop_x + 4 * hoop_w
-        y1 = hoop_y - 2 * hoop_h
-        y2 = hoop_y - 0.5 * hoop_h
-
-        # Check if ball is in UP region
-        is_in_up_region = (x1 < ball_x < x2 and y1 < ball_y < y2)
-        self.debug_logger.debug(f"UP检测 - Frame {self.frame_count}: ball=({ball_x},{ball_y}), region=({x1:.1f},{y1:.1f}) to ({x2:.1f},{y2:.1f}), in_region={is_in_up_region}")
-        
-        return is_in_up_region
-
-    def detect_down_with_selected(self, selected_ball, selected_hoop):
-        """
-        Detect if ball is in DOWN region using synchronized data
-        
-        Args:
-            selected_ball: Ball detection data from current frame
-            selected_hoop: Hoop detection data from current frame
-            
-        Returns:
-            bool: True if ball is in DOWN region
-        """
-        # Extract data
-        ball_center = selected_ball[0]
-        ball_x, ball_y = ball_center
-        hoop_center = selected_hoop[0]
-        hoop_x, hoop_y = hoop_center
-        hoop_h = selected_hoop[3]
-
-        # Define DOWN region (below hoop)
-        rim_top_y = hoop_y - 0.5 * hoop_h
-        
-        # Check if ball is below the rim (in DOWN region)
-        is_in_down_region = (ball_y > rim_top_y)
-        self.debug_logger.debug(f"DOWN检测 - Frame {self.frame_count}: ball_y={ball_y:.1f}, threshold={rim_top_y:.1f} (hoop top edge), in_region={is_in_down_region}")
-        
-        return is_in_down_region
-
-    def analyze_shot_attempt(self):
-        """Analyze shot attempt when DOWN is detected after UP"""
-        # Check if we have enough data to analyze a potential shot
-        if len(self.ball_pos) > 0 and len(self.hoop_pos) > 0:
-            # Create debug info dictionary
-            debug_info = {}
-
-            # Check if this is a valid shot attempt (UP→DOWN sequence)
-            is_valid_shot_attempt = (self.up and self.down and self.up_frame < self.down_frame)
-
-            if is_valid_shot_attempt:
-                # Valid shot attempt - analyze trajectory
-                self.attempts += 1
-                self.up = False
-                self.down = False
-
-                # Add shot context information
-                debug_info['shot_context'] = {
-                    'up_frame': self.up_frame,
-                    'down_frame': self.down_frame,
-                    'frames_between_up_down': self.down_frame - self.up_frame,
-                    'total_ball_positions': len(self.ball_pos),
-                    'total_hoop_positions': len(self.hoop_pos),
-                    'detection_type': 'valid_shot_attempt'
-                }
-
-                # Check if it's a make or miss with debug info
-                is_successful = score(self.ball_pos, self.hoop_pos, debug_info)
-
-            else:
-                # Not a valid shot attempt - record as failed detection
-                debug_info['shot_context'] = {
-                    'up_frame': self.up_frame if hasattr(self, 'up_frame') else None,
-                    'down_frame': self.down_frame if hasattr(self, 'down_frame') else None,
-                    'up_detected': self.up,
-                    'down_detected': self.down,
-                    'total_ball_positions': len(self.ball_pos),
-                    'total_hoop_positions': len(self.hoop_pos),
-                    'detection_type': 'invalid_shot_attempt'
-                }
-
-                # Determine failure reason
-                if not self.up and not self.down:
-                    debug_info['failure_reason'] = "No UP or DOWN movement detected"
-                elif not self.up:
-                    debug_info['failure_reason'] = "No UP movement detected (ball didn't enter UP zone)"
-                elif not self.down:
-                    debug_info['failure_reason'] = "No DOWN movement detected (ball didn't enter DOWN zone)"
-                elif self.up_frame >= self.down_frame:
-                    debug_info['failure_reason'] = "Invalid sequence: DOWN detected before UP"
-
-                is_successful = False
-
-            # 🔧 CRITICAL FIX: Reset UP/DOWN states after any shot analysis
-            # This prevents incorrect UP states from persisting
-            self.debug_logger.info(f"🔧 Resetting UP/DOWN states after shot analysis")
-            self.debug_logger.debug(f"🔧 Previous states: UP={self.up} (frame {self.up_frame}), DOWN={self.down} (frame {self.down_frame})")
-            self.up = False
-            self.down = False
-            self.up_frame = 0
-            self.down_frame = 0
-            self.debug_logger.debug(f"🔧 States reset: UP={self.up}, DOWN={self.down}")
-
-            timestamp = self.frame_count / 30  # assuming 30fps
-
-            # Log shot attempt immediately when DOWN is detected
-            self.shot_logger.log_shot(
-                frame_idx=self.frame_count,
-                timestamp=timestamp,
-                ball_pos=self.ball_pos[-1][0],
-                hoop_pos=self.hoop_pos[-1][0],
-                ball_confidence=self.ball_pos[-1][4],  # Use actual ball confidence
-                is_successful=is_successful,
-                debug_info=debug_info
-            )
-
-            # Clear trajectory data after shot analysis is complete
-            # This prevents data contamination between different shots
-            self.ball_pos = []
-            self.hoop_pos = []
-            if self.enable_person_detection:
-                self.person_pos = []
-
-            if is_successful:
-                self.makes += 1
-                self.overlay_color = (0, 255, 0)  # Green for make
-                self.overlay_text = "Make"
-                self.fade_counter = self.fade_frames
-            else:
-                self.overlay_color = (255, 0, 0)  # Red for miss
-                self.overlay_text = "Miss"
-                self.fade_counter = self.fade_frames
-
-    def display_score(self):
-        """
-        Display current score on video frame
-        """
-        score_text = f"{self.makes}/{self.attempts}"
-        cvzone.putTextRect(self.frame, score_text, (50, 50),
-                           scale=2, thickness=3, colorR=self.overlay_color)
-
     def run(self):
         # Initialize video writer if output path is provided
         if self.output_video:
@@ -958,12 +742,18 @@ class ShotDetector:
             self.debug_logger.debug(f"📍 Processing frame {self.frame_count} with {len(current_frame_balls)} balls, {len(current_frame_hoops)} hoops")
             self.process_frame_detections(current_frame_balls, current_frame_hoops)
             self.display_score()
-            self.frame_logger.frame_count = self.frame_count
-            self.frame_logger.update_progress(self.frame_count, self.total_frames)
+            self.logger.frame_count = self.frame_count
+            self.logger.update_progress(self.frame_count, self.total_frames)
             progress_bar.update(1)
 
-            # Update frame logger with current frame count
-            self.frame_logger.frame_count = self.frame_count
+            # Write frame to output video if specified
+            if self.video_writer:
+                self.video_writer.write(self.frame)
+            else:
+                cv2.imshow('Frame', self.frame)
+                # Close if 'q' is clicked
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
 
             # Log frame data after processing
             all_balls = self.ball_pos if hasattr(self, 'ball_pos') else []
@@ -980,7 +770,7 @@ class ShotDetector:
             persons_data = all_persons if self.enable_person_detection else []
             current_persons_data = current_frame_persons if self.enable_person_detection else []
 
-            self.frame_logger.log_frame_data(
+            self.logger.log_frame_data(
                 self.frame_count,
                 all_balls,
                 all_hoops,
@@ -994,42 +784,265 @@ class ShotDetector:
                 self.selected_ball,
                 self.selected_hoop
             )
-
-            # Write frame to output video if specified
-            if self.video_writer:
-                self.video_writer.write(self.frame)
-            else:
-                cv2.imshow('Frame', self.frame)
-                # Close if 'q' is clicked
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-
             self.frame_count += 1
 
+        progress_bar.close()
         self.cap.release()
-        cv2.destroyAllWindows()
+        if self.video_writer:
+            self.video_writer.release()
+        else:
+            cv2.destroyAllWindows()
 
         # Close frame log file if it exists and is still open
-        if hasattr(self.frame_logger, '_frame_log_file') and self.frame_logger._frame_log_file and not self.frame_logger._frame_log_file.closed:
+        if hasattr(self.logger, '_frame_log_file') and self.logger._frame_log_file and not self.logger._frame_log_file.closed:
             try:
-                self.frame_logger._frame_log_file.write(']')  # Close JSON array
-                self.frame_logger._frame_log_file.close()
+                self.logger._frame_log_file.write(']')  # Close JSON array
+                self.logger._frame_log_file.close()
             except (ValueError, AttributeError) as e:
                 print(f"Warning: Could not close frame log file properly: {e}")
 
-        # Save both frame and shot logs after processing completes
-        frame_log_filename = self.frame_logger.save_log()
-        shot_log_filename = self.shot_logger.save_log()
-        print(f"\n✅ 帧日志已保存到: {frame_log_filename}")
-        print(f"\n✅ 投篮日志已保存到: {shot_log_filename}")
+        # Save shot log after processing completes
+        log_filename = self.logger.save_log()
+        print(f"\n✅ 投篮日志已保存到: {log_filename}")
 
         # 打印改进的摘要
-        self.shot_logger.print_improved_summary()
+        self.logger.print_improved_summary()
 
         # 关闭调试日志器
         self.debug_logger.info(f"Processing completed. Debug log saved to: {self.debug_logger.debug_log_file}")
         self.debug_logger.close()
         print(f"\n📝 调试日志已保存到: {self.debug_logger.debug_log_file}")
+
+    def display_score(self):
+        # Add text
+        text = str(self.makes) + " / " + str(self.attempts)
+        cv2.putText(self.frame, text, (50, 125), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 255, 255), 6)
+        cv2.putText(self.frame, text, (50, 125), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 0, 0), 3)
+
+        # Draw UP/DOWN regions for visualization
+        self.draw_detection_regions()
+
+        # Add overlay text for shot result if it exists
+        if hasattr(self, 'overlay_text'):
+            # Calculate text size to position it at the right top corner
+            (text_width, text_height), _ = cv2.getTextSize(self.overlay_text, cv2.FONT_HERSHEY_SIMPLEX, 3, 6)
+            text_x = self.frame.shape[1] - text_width - 40  # Right alignment with some margin
+            text_y = 100  # Top margin
+
+            # Display overlay text with color (overlay_color)
+            cv2.putText(self.frame, self.overlay_text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 3,
+                        self.overlay_color, 6)
+
+        # Gradually fade out color after shot
+        if self.fade_counter > 0:
+            alpha = 0.2 * (self.fade_counter / self.fade_frames)
+            self.frame = cv2.addWeighted(self.frame, 1 - alpha, np.full_like(self.frame, self.overlay_color), alpha, 0)
+            self.fade_counter -= 1
+
+    def draw_detection_regions(self):
+        """
+        Draw visualization regions for UP/DOWN detection
+        """
+        # This is a placeholder - implement actual visualization if needed
+        pass
+
+    def shot_detection_with_selected(self):
+        """
+        Perform UP/DOWN detection using synchronized selected data
+        Only called when both ball and hoop are detected in same frame
+        """
+        if not self.selected_ball or not self.selected_hoop:
+            self.debug_logger.debug(f"🚫 Frame {self.frame_count}: Skipping UP/DOWN detection - no synchronized data")
+            return
+
+        self.debug_logger.debug(f"🔍 Frame {self.frame_count}: Performing UP/DOWN detection with synchronized data")
+
+        # 🔧 CRITICAL FIX: Save the exact hoop data used for UP/DOWN detection
+        # This ensures visualization uses the same data as detection logic
+        self.detection_hoop_data = self.selected_hoop
+
+        # UP detection
+        if not self.up:
+            self.debug_logger.debug(f"🔥 FORCE DEBUG: Attempting UP detection for frame {self.frame_count}")
+            up_detected = self.detect_up_with_selected(self.selected_ball, self.selected_hoop)
+            self.debug_logger.debug(f"🔥 UP detection result: {up_detected}")
+            if up_detected:
+                self.up = True
+                self.up_frame = self.frame_count  # Use current frame count
+                self.debug_logger.info(f"🔥 ✅ UP state detected at frame {self.up_frame}")
+            else:
+                self.debug_logger.debug(f"🔥 ❌ Frame {self.frame_count}: Ball not in UP region")
+        else:
+            self.debug_logger.debug(f"🔥 UP already detected at frame {self.up_frame}, skipping UP detection")
+
+        # DOWN detection (only after UP)
+        if self.up and not self.down:
+            down_detected = self.detect_down_with_selected(self.selected_ball, self.selected_hoop)
+            if down_detected:
+                self.down = True
+                self.down_frame = self.frame_count  # Use current frame count
+                self.debug_logger.info(f"✅ DOWN state detected at frame {self.down_frame}")
+
+                # Trigger shot analysis immediately
+                self.analyze_shot_attempt()
+            else:
+                self.debug_logger.debug(f"❌ Frame {self.frame_count}: Ball not in DOWN region")
+
+    def shot_detection(self):
+        # Legacy method - kept for compatibility but should not be used
+        # New detection uses shot_detection_with_selected()
+        pass
+
+    def detect_up_with_selected(self, selected_ball, selected_hoop):
+        """
+        Detect if ball is in UP region using synchronized data
+        
+        Args:
+            selected_ball: Ball detection data from current frame
+            selected_hoop: Hoop detection data from current frame
+            
+        Returns:
+            bool: True if ball is in UP region
+        """
+        # Extract data
+        ball_center = selected_ball[0]
+        ball_x, ball_y = ball_center
+        hoop_center = selected_hoop[0]
+        hoop_x, hoop_y = hoop_center
+        hoop_w = selected_hoop[2]
+        hoop_h = selected_hoop[3]
+
+        # Define UP region (around backboard/hoop area)
+        x1 = hoop_x - 4 * hoop_w
+        x2 = hoop_x + 4 * hoop_w
+        y1 = hoop_y - 2 * hoop_h
+        y2 = hoop_y - 0.5 * hoop_h
+
+        # Check if ball is in UP region
+        is_in_up_region = (x1 < ball_x < x2 and y1 < ball_y < y2)
+        self.debug_logger.debug(f"UP检测 - Frame {self.frame_count}: ball=({ball_x},{ball_y}), region=({x1:.1f},{y1:.1f}) to ({x2:.1f},{y2:.1f}), in_region={is_in_up_region}")
+        
+        return is_in_up_region
+
+    def detect_down_with_selected(self, selected_ball, selected_hoop):
+        """
+        Detect if ball is in DOWN region using synchronized data
+        
+        Args:
+            selected_ball: Ball detection data from current frame
+            selected_hoop: Hoop detection data from current frame
+            
+        Returns:
+            bool: True if ball is in DOWN region
+        """
+        # Extract data
+        ball_center = selected_ball[0]
+        ball_x, ball_y = ball_center
+        hoop_center = selected_hoop[0]
+        hoop_x, hoop_y = hoop_center
+        hoop_h = selected_hoop[3]
+
+        # Define DOWN region (below hoop)
+        rim_top_y = hoop_y - 0.5 * hoop_h
+        
+        # Check if ball is below the rim (in DOWN region)
+        is_in_down_region = (ball_y > rim_top_y)
+        self.debug_logger.debug(f"DOWN检测 - Frame {self.frame_count}: ball_y={ball_y:.1f}, threshold={rim_top_y:.1f} (hoop top edge), in_region={is_in_down_region}")
+        
+        return is_in_down_region
+
+    def analyze_shot_attempt(self):
+        """Analyze shot attempt when DOWN is detected after UP"""
+        # Check if we have enough data to analyze a potential shot
+        if len(self.ball_pos) > 0 and len(self.hoop_pos) > 0:
+            # Create debug info dictionary
+            debug_info = {}
+
+            # Check if this is a valid shot attempt (UP→DOWN sequence)
+            is_valid_shot_attempt = (self.up and self.down and self.up_frame < self.down_frame)
+
+            if is_valid_shot_attempt:
+                # Valid shot attempt - analyze trajectory
+                self.attempts += 1
+                self.up = False
+                self.down = False
+
+                # Add shot context information
+                debug_info['shot_context'] = {
+                    'up_frame': self.up_frame,
+                    'down_frame': self.down_frame,
+                    'frames_between_up_down': self.down_frame - self.up_frame,
+                    'total_ball_positions': len(self.ball_pos),
+                    'total_hoop_positions': len(self.hoop_pos),
+                    'detection_type': 'valid_shot_attempt'
+                }
+
+                # Check if it's a make or miss with debug info
+                is_successful = score(self.ball_pos, self.hoop_pos, debug_info)
+
+            else:
+                # Not a valid shot attempt - record as failed detection
+                debug_info['shot_context'] = {
+                    'up_frame': self.up_frame if hasattr(self, 'up_frame') else None,
+                    'down_frame': self.down_frame if hasattr(self, 'down_frame') else None,
+                    'up_detected': self.up,
+                    'down_detected': self.down,
+                    'total_ball_positions': len(self.ball_pos),
+                    'total_hoop_positions': len(self.hoop_pos),
+                    'detection_type': 'invalid_shot_attempt'
+                }
+
+                # Determine failure reason
+                if not self.up and not self.down:
+                    debug_info['failure_reason'] = "No UP or DOWN movement detected"
+                elif not self.up:
+                    debug_info['failure_reason'] = "No UP movement detected (ball didn't enter UP zone)"
+                elif not self.down:
+                    debug_info['failure_reason'] = "No DOWN movement detected (ball didn't enter DOWN zone)"
+                elif self.up_frame >= self.down_frame:
+                    debug_info['failure_reason'] = "Invalid sequence: DOWN detected before UP"
+
+                is_successful = False
+
+            # 🔧 CRITICAL FIX: Reset UP/DOWN states after any shot analysis
+            # This prevents incorrect UP states from persisting
+            self.debug_logger.info(f"🔧 Resetting UP/DOWN states after shot analysis")
+            self.debug_logger.debug(f"🔧 Previous states: UP={self.up} (frame {self.up_frame}), DOWN={self.down} (frame {self.down_frame})")
+            self.up = False
+            self.down = False
+            self.up_frame = 0
+            self.down_frame = 0
+            self.debug_logger.debug(f"🔧 States reset: UP={self.up}, DOWN={self.down}")
+
+            timestamp = self.frame_count / 30  # assuming 30fps
+
+            # Log shot attempt immediately when DOWN is detected
+            self.logger.log_shot(
+                frame_idx=self.frame_count,
+                timestamp=timestamp,
+                ball_pos=self.ball_pos[-1][0],
+                hoop_pos=self.hoop_pos[-1][0],
+                ball_confidence=self.ball_pos[-1][4],  # Use actual ball confidence
+                is_successful=is_successful,
+                debug_info=debug_info
+            )
+
+            # Clear trajectory data after shot analysis is complete
+            # This prevents data contamination between different shots
+            self.ball_pos = []
+            self.hoop_pos = []
+            if self.enable_person_detection:
+                self.person_pos = []
+
+            if is_successful:
+                self.makes += 1
+                self.overlay_color = (0, 255, 0)  # Green for make
+                self.overlay_text = "Make"
+                self.fade_counter = self.fade_frames
+            else:
+                self.overlay_color = (255, 0, 0)  # Red for miss
+                self.overlay_text = "Miss"
+                self.fade_counter = self.fade_frames
 
 if __name__ == "__main__":
     import argparse
@@ -1039,7 +1052,7 @@ if __name__ == "__main__":
     parser.add_argument('--input', type=str, default='video_test_5.mp4', help='Input video file path')
     parser.add_argument('--output', type=str, help='Output video file path')
     parser.add_argument('--ball-model', type=str, default='Yolo-Weights/yolov8x.pt', help='Ball detection model (default: yolov8x.pt)')
-    parser.add_argument('--hoop-model', type=str, default=None, help='Hoop detection model (default: best.pt)')
+    parser.add_argument('--hoop-model', type=str, default= None, help='Hoop detection model (default: best.pt)')
     parser.add_argument('--config', type=str, help='Use predefined model configuration (e.g., high_accuracy, balanced, real_time)')
     parser.add_argument('--list-models', action='store_true', help='List all available model configurations')
     args = parser.parse_args()

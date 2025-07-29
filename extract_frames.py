@@ -23,7 +23,7 @@ def extract_frames_with_ffmpeg(video_path, output_dir, frames=None, frame_range=
     if frames is not None:
         # 如果指定了特定帧，我们需要为每一帧单独运行ffmpeg
         for idx in sorted(set(frames)):
-            vidx = idx + 1  # 调整为1-based索引
+            vidx = idx + 1  # 调整为1-based索引以保持全局帧编号
             out_path = os.path.join(output_dir, f"frame_{vidx:05d}.jpg")
             # ffmpeg -i video.mp4 -vf "select=eq(n\,10)" -vframes 1 output.jpg
             cmd = [
@@ -39,20 +39,33 @@ def extract_frames_with_ffmpeg(video_path, output_dir, frames=None, frame_range=
         # 如果是提取所有帧或一个范围内的帧
         if frame_range is not None:
             start, end = frame_range
-            # ffmpeg -i video.mp4 -vf "select=between(n\,100\,200)" -vsync 0 output_%05d.jpg
-            filter_expr = f'select=between(n\\,{start}\\,{end-1})'
+            # 使用ffmpeg的start_number选项来保持全局帧编号
+            # 这样可以避免循环，提高效率
+            out_pattern = os.path.join(output_dir, f"frame_%05d.jpg")
+            cmd = [
+                'ffmpeg', '-i', video_path,
+                '-vf', f'select=between(n\\,{start}\\,{end-1})',  # 选择范围内的帧
+                '-vsync', '0',
+                '-q:v', '1',  # 高质量
+                '-start_number', str(start + 1),  # 设置起始编号以保持全局帧编号
+                out_pattern
+            ]
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # 打印保存的帧信息
+            for idx in range(start, end):
+                vidx = idx + 1
+                out_path = os.path.join(output_dir, f"frame_{vidx:05d}.jpg")
+                print(f"Saved {out_path}")
         else:
-            filter_expr = 'select=1'  # 选择所有帧
-        
-        cmd = [
-            'ffmpeg', '-i', video_path,
-            '-vf', filter_expr,
-            '-vsync', '0',
-            '-q:v', '1',  # 高质量
-            os.path.join(output_dir, f"frame_%05d.jpg")
-        ]
-        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        print(f"Extracted frames saved to {output_dir}")
+            cmd = [
+                'ffmpeg', '-i', video_path,
+                '-vf', 'select=1',
+                '-vsync', '0',
+                '-q:v', '1',  # 高质量
+                os.path.join(output_dir, f"frame_%05d.jpg")
+            ]
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            print(f"Extracted frames saved to {output_dir}")
     
     print("Done.")
 
@@ -79,12 +92,15 @@ def extract_frames(video_path, output_dir, frames=None, frame_range=None):
     
     # 检查是否有ffmpeg
     has_ffmpeg = check_ffmpeg()
+    print(f"FFmpeg available: {has_ffmpeg}")  # 添加打印以验证ffmpeg可用性
     if has_ffmpeg:
         print("检测到ffmpeg，使用ffmpeg提取帧...")
         extract_frames_with_ffmpeg(video_path, output_dir, frames, frame_range)
+        print("使用ffmpeg完成帧提取")  # 添加完成打印
     else:
         print("未检测到ffmpeg，使用OpenCV提取帧...")
         extract_frames_with_opencv(video_path, output_dir, frames, frame_range)
+        print("使用OpenCV完成帧提取")  # 添加完成打印
 
 def extract_frames_with_opencv(video_path, output_dir, frames=None, frame_range=None):
     """使用OpenCV提取视频帧"""
@@ -107,7 +123,7 @@ def extract_frames_with_opencv(video_path, output_dir, frames=None, frame_range=
     for idx in frame_indices:
         cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
         ret, frame = cap.read()
-        vidx=idx+1
+        vidx=idx+1  # 保持全局帧编号（从1开始）
         if not ret:
             print(f"Warning: Could not read frame {vidx}")
             continue
