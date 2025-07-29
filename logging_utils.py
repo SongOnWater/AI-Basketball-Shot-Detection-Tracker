@@ -135,9 +135,34 @@ class ShotLogger:
 
     def save_log(self):
         """保存日志到文件"""
+        # Add statistics to the log data
+        shots = [entry for entry in self._log_data if "shot" in entry]
+        makes = sum(1 for shot in shots if shot["shot"]["is_successful"])
+        attempts = len(shots)
+        
+        # Create statistics data
+        statistics = {
+            "total_shots": attempts,
+            "successful_shots": makes,
+            "failed_shots": attempts - makes,
+            "success_rate": makes / attempts if attempts > 0 else 0,
+            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        # Add statistics to the log data
+        log_data_with_stats = {
+            "statistics": statistics,
+            "shots": self._log_data
+        }
+        
         with open(self.log_file, 'w', encoding='utf-8') as f:
-            json.dump(self._log_data, f, indent=2, ensure_ascii=False)
+            json.dump(log_data_with_stats, f, indent=2, ensure_ascii=False)
         return self.log_file
+
+    def close(self):
+        """关闭日志文件"""
+        if self._log_file and not self._log_file.closed:
+            self._log_file.close()
 
     def print_improved_summary(self):
         """打印改进的摘要信息"""
