@@ -135,8 +135,33 @@ class ShotLogger:
 
     def save_log(self):
         """保存日志到文件"""
-        with open(self.log_file, 'w', encoding='utf-8') as f:
-            json.dump(self._log_data, f, indent=2, ensure_ascii=False)
+        # 如果是投篮日志类型，添加统计数据
+        if "shot" in self.log_file:
+            # 计算统计数据
+            shots = [entry for entry in self._log_data if "shot" in entry]
+            total_shots = len(shots)
+            successful_shots = sum(1 for shot in shots if shot["shot"]["is_successful"])
+            failed_shots = total_shots - successful_shots
+            success_rate = successful_shots / total_shots if total_shots > 0 else 0
+            
+            # 创建包含统计数据和详细投篮信息的结构
+            log_content = {
+                "statistics": {
+                    "total_shots": total_shots,
+                    "successful_shots": successful_shots,
+                    "failed_shots": failed_shots,
+                    "success_rate": success_rate,
+                    "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                },
+                "shots": [entry["shot"] for entry in self._log_data if "shot" in entry]
+            }
+            
+            with open(self.log_file, 'w', encoding='utf-8') as f:
+                json.dump(log_content, f, indent=2, ensure_ascii=False)
+        else:
+            # 帧日志保持原有格式
+            with open(self.log_file, 'w', encoding='utf-8') as f:
+                json.dump(self._log_data, f, indent=2, ensure_ascii=False)
         return self.log_file
 
     def print_improved_summary(self):

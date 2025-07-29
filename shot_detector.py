@@ -86,7 +86,9 @@ class ShotDetector:
         self.output_video = output_video
         self.video_writer = None
 
-        self.logger = ShotLogger(input_file=self.input_video, model_path=self.ball_model_path, log_type="frame")
+        # Initialize two loggers - one for frame data and one for shot data
+        self.frame_logger = ShotLogger(input_file=self.input_video, model_path=self.ball_model_path, log_type="frame")
+        self.shot_logger = ShotLogger(input_file=self.input_video, model_path=self.ball_model_path, log_type="shot")
         # 关键：让 ShotDetector 直接引用 ShotLogger 的 debug_logger
         self.debug_logger = DebugLogger(debug_log_file=os.path.join('logs', 'console_output.log'), input_file=self.input_video, model_path=self.ball_model_path, log_type="debug")
         self.debug_logger.debug_file_only("[ShotDetector] debug_logger now references ShotLogger's initialized logger.")
@@ -742,18 +744,12 @@ class ShotDetector:
             self.debug_logger.debug(f"📍 Processing frame {self.frame_count} with {len(current_frame_balls)} balls, {len(current_frame_hoops)} hoops")
             self.process_frame_detections(current_frame_balls, current_frame_hoops)
             self.display_score()
-            self.logger.frame_count = self.frame_count
-            self.logger.update_progress(self.frame_count, self.total_frames)
+            self.frame_logger.frame_count = self.frame_count
+            self.frame_logger.update_progress(self.frame_count, self.total_frames)
             progress_bar.update(1)
 
-            # Write frame to output video if specified
-            if self.video_writer:
-                self.video_writer.write(self.frame)
-            else:
-                cv2.imshow('Frame', self.frame)
-                # Close if 'q' is clicked
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
+            # Update frame logger with current frame count
+            self.frame_logger.frame_count = self.frame_count
 
             # Log frame data after processing
             all_balls = self.ball_pos if hasattr(self, 'ball_pos') else []
@@ -770,7 +766,7 @@ class ShotDetector:
             persons_data = all_persons if self.enable_person_detection else []
             current_persons_data = current_frame_persons if self.enable_person_detection else []
 
-            self.logger.log_frame_data(
+            self.frame_logger.log_frame_data(
                 self.frame_count,
                 all_balls,
                 all_hoops,
@@ -784,6 +780,16 @@ class ShotDetector:
                 self.selected_ball,
                 self.selected_hoop
             )
+
+            # Write frame to output video if specified
+            if self.video_writer:
+                self.video_writer.write(self.frame)
+            else:
+                cv2.imshow('Frame', self.frame)
+                # Close if 'q' is clicked
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+
             self.frame_count += 1
 
         progress_bar.close()
@@ -794,19 +800,21 @@ class ShotDetector:
             cv2.destroyAllWindows()
 
         # Close frame log file if it exists and is still open
-        if hasattr(self.logger, '_frame_log_file') and self.logger._frame_log_file and not self.logger._frame_log_file.closed:
+        if hasattr(self.frame_logger, '_frame_log_file') and self.frame_logger._frame_log_file and not self.frame_logger._frame_log_file.closed:
             try:
-                self.logger._frame_log_file.write(']')  # Close JSON array
-                self.logger._frame_log_file.close()
+                self.frame_logger._frame_log_file.write(']')  # Close JSON array
+                self.frame_logger._frame_log_file.close()
             except (ValueError, AttributeError) as e:
                 print(f"Warning: Could not close frame log file properly: {e}")
 
-        # Save shot log after processing completes
-        log_filename = self.logger.save_log()
-        print(f"\n✅ 投篮日志已保存到: {log_filename}")
+        # Save both frame and shot logs after processing completes
+        frame_log_filename = self.frame_logger.save_log()
+        shot_log_filename = self.shot_logger.save_log()
+        print(f"\n✅ 帧日志已保存到: {frame_log_filename}")
+        print(f"\n✅ 投篮日志已保存到: {shot_log_filename}")
 
         # 打印改进的摘要
-        self.logger.print_improved_summary()
+        self.shot_logger.print_improved_summary()
 
         # 关闭调试日志器
         self.debug_logger.info(f"Processing completed. Debug log saved to: {self.debug_logger.debug_log_file}")
@@ -1017,7 +1025,7 @@ class ShotDetector:
             timestamp = self.frame_count / 30  # assuming 30fps
 
             # Log shot attempt immediately when DOWN is detected
-            self.logger.log_shot(
+            self.shot_logger.log_shot(
                 frame_idx=self.frame_count,
                 timestamp=timestamp,
                 ball_pos=self.ball_pos[-1][0],
