@@ -70,6 +70,7 @@ class ShotLogger:
     def __init__(self, log_dir='logs', input_file=None, model_path=None, log_type="frame"):
         self.input_file = input_file
         self.model_path = model_path
+        self.log_type = log_type  # 添加日志类型属性
         os.makedirs(log_dir, exist_ok=True)
         timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         input_name = os.path.splitext(os.path.basename(input_file))[0] if input_file else 'unknown_input'
@@ -77,6 +78,12 @@ class ShotLogger:
         self.log_file = os.path.join(log_dir, f'{input_name}_{model_name}_{log_type}_{timestamp}.json')
         self.frame_count = 0
         self._log_data = []
+        # 添加统计数据
+        self._stats = {
+            "video_cuts": [],
+            "up_down_pairs": []  # 修改为存储UP/DOWN对
+        }
+        self._current_up = None  # 临时存储当前UP事件
 
     def log_frame_data(self, frame_idx, ball_pos, hoop_pos, person_pos,
                       selected_ball_idx, selected_hoop_idx, selected_person_idx,
@@ -129,12 +136,49 @@ class ShotLogger:
         }
         self._log_data.append({"shot": shot_data})
 
+    def log_video_cut(self, frame_idx):
+        """记录视频剪辑事件"""
+        self._stats["video_cuts"].append(frame_idx)
+
+    def log_up_event(self, frame_idx):
+        """记录UP事件"""
+        self._current_up = frame_idx
+
+    def log_down_event(self, frame_idx):
+        """记录DOWN事件，并与之前的UP事件组成一对"""
+        if self._current_up is not None:
+            # 将UP/DOWN对添加到统计数据中
+            self._stats["up_down_pairs"].append({
+                "up_frame": self._current_up,
+                "down_frame": frame_idx
+            })
+            self._current_up = None  # 重置当前UP事件
+        else:
+            # 如果没有对应的UP事件，则单独记录DOWN事件
+            self._stats["up_down_pairs"].append({
+                "up_frame": None,
+                "down_frame": frame_idx
+            })
+
+    def finalize_incomplete_up(self):
+        """处理最后可能未完成的UP事件"""
+        if self._current_up is not None:
+            # 如果存在未配对的UP事件，将其作为缺省DOWN的对记录
+            self._stats["up_down_pairs"].append({
+                "up_frame": self._current_up,
+                "down_frame": None
+            })
+            self._current_up = None
+
     def update_progress(self, current_frame, total_frames):
         """更新处理进度"""
         self.frame_count = current_frame
 
     def save_log(self):
         """保存日志到文件"""
+        # 处理可能未完成的UP事件
+        self.finalize_incomplete_up()
+        
         # 如果是投篮日志类型，添加统计数据
         if "shot" in self.log_file:
             # 计算统计数据
@@ -159,9 +203,24 @@ class ShotLogger:
             with open(self.log_file, 'w', encoding='utf-8') as f:
                 json.dump(log_content, f, indent=2, ensure_ascii=False)
         else:
-            # 帧日志保持原有格式
+            # 帧日志添加统计数据
+            log_content = {
+                "statistics": {
+                    "video_cuts": {
+                        "count": len(self._stats["video_cuts"]),
+                        "frames": self._stats["video_cuts"]
+                    },
+                    "up_down_pairs": {
+                        "count": len(self._stats["up_down_pairs"]),
+                        "pairs": self._stats["up_down_pairs"]
+                    },
+                    "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                },
+                "frames": self._log_data
+            }
+            
             with open(self.log_file, 'w', encoding='utf-8') as f:
-                json.dump(self._log_data, f, indent=2, ensure_ascii=False)
+                json.dump(log_content, f, indent=2, ensure_ascii=False)
         return self.log_file
 
     def print_improved_summary(self):

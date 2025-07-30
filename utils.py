@@ -13,6 +13,45 @@ def get_device():
         device = 'cpu'
     return device
 
+def clean_ball_pos(ball_pos, frame_count):
+    """
+    Clean up ball position data by removing inaccurate data points
+    
+    Args:
+        ball_pos: List of ball positions
+        frame_count: Current frame count
+        
+    Returns:
+        Cleaned ball position list
+    """
+    if len(ball_pos) <= 1:
+        return ball_pos
+        
+    # Remove data points that are too old (older than 30 frames)
+    while len(ball_pos) > 1 and frame_count - ball_pos[0][1] > 30:
+        ball_pos.pop(0)
+        
+    return ball_pos
+
+def clean_hoop_pos(hoop_pos):
+    """
+    Clean up hoop position data by removing inaccurate data points
+    
+    Args:
+        hoop_pos: List of hoop positions
+        
+    Returns:
+        Cleaned hoop position list
+    """
+    if len(hoop_pos) <= 1:
+        return hoop_pos
+        
+    # Keep only the most recent hoop positions (maximum 10)
+    if len(hoop_pos) > 10:
+        hoop_pos = hoop_pos[-10:]
+        
+    return hoop_pos
+
 
 def score(ball_pos, hoop_pos, debug_info=None):
     """
@@ -58,16 +97,20 @@ def score(ball_pos, hoop_pos, debug_info=None):
     above_point = None
     below_point = None
     
+    # Find last point above rim
     for i in reversed(range(len(ball_pos))):
         if ball_pos[i][0][1] < rim_height:
             x.append(ball_pos[i][0][0])
             y.append(ball_pos[i][0][1])
             above_point = {'x': ball_pos[i][0][0], 'y': ball_pos[i][0][1], 'frame': ball_pos[i][1]}
-            if i + 1 < len(ball_pos):
-                x.append(ball_pos[i + 1][0][0])
-                y.append(ball_pos[i + 1][0][1])
-                below_point = {'x': ball_pos[i + 1][0][0], 'y': ball_pos[i + 1][0][1], 'frame': ball_pos[i + 1][1]}
             break
+    
+    # Use the last point (DOWN frame detected point) as the first point below rim
+    if len(ball_pos) > 0:
+        last_ball_pos = ball_pos[-1]
+        x.append(last_ball_pos[0][0])
+        y.append(last_ball_pos[0][1])
+        below_point = {'x': last_ball_pos[0][0], 'y': last_ball_pos[0][1], 'frame': last_ball_pos[1]}
     
     debug_info['key_points'] = {
         'above_rim_point': above_point,
@@ -174,92 +217,3 @@ def detect_up(ball_pos, hoop_pos):
 def in_hoop_region(center, hoop_pos):
     if len(hoop_pos) < 1:
         return False
-    x = center[0]
-    y = center[1]
-
-    x1 = hoop_pos[-1][0][0] - 1 * hoop_pos[-1][2]
-    x2 = hoop_pos[-1][0][0] + 1 * hoop_pos[-1][2]
-    y1 = hoop_pos[-1][0][1] - 1 * hoop_pos[-1][3]
-    y2 = hoop_pos[-1][0][1] + 0.5 * hoop_pos[-1][3]
-
-    if x1 < x < x2 and y1 < y < y2:
-        return True
-    return False
-
-
-# Removes inaccurate data points
-def clean_ball_pos(ball_pos, frame_count):
-    # Removes inaccurate ball size to prevent jumping to wrong ball
-    if len(ball_pos) > 1:
-        # Width and Height
-        w1 = ball_pos[-2][2]
-        h1 = ball_pos[-2][3]
-        w2 = ball_pos[-1][2]
-        h2 = ball_pos[-1][3]
-
-        # X and Y coordinates
-        x1 = ball_pos[-2][0][0]
-        y1 = ball_pos[-2][0][1]
-        x2 = ball_pos[-1][0][0]
-        y2 = ball_pos[-1][0][1]
-
-        # Frame count
-        f1 = ball_pos[-2][1]
-        f2 = ball_pos[-1][1]
-        f_dif = f2 - f1
-
-        dist = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-
-        max_dist = 4 * math.sqrt((w1) ** 2 + (h1) ** 2)
-
-        # Ball should not move a 4x its diameter within 5 frames
-        if (dist > max_dist) and (f_dif < 5):
-            ball_pos.pop()
-
-        # Ball should be relatively square
-        elif (w2*1.4 < h2) or (h2*1.4 < w2):
-            ball_pos.pop()
-
-    # Remove points older than 30 frames
-    if len(ball_pos) > 0:
-        if frame_count - ball_pos[0][1] > 30:
-            ball_pos.pop(0)
-
-    return ball_pos
-
-
-def clean_hoop_pos(hoop_pos):
-    # Prevents jumping from one hoop to another
-    if len(hoop_pos) > 1:
-        x1 = hoop_pos[-2][0][0]
-        y1 = hoop_pos[-2][0][1]
-        x2 = hoop_pos[-1][0][0]
-        y2 = hoop_pos[-1][0][1]
-
-        w1 = hoop_pos[-2][2]
-        h1 = hoop_pos[-2][3]
-        w2 = hoop_pos[-1][2]
-        h2 = hoop_pos[-1][3]
-
-        f1 = hoop_pos[-2][1]
-        f2 = hoop_pos[-1][1]
-
-        f_dif = f2-f1
-
-        dist = math.sqrt((x2-x1)**2 + (y2-y1)**2)
-
-        max_dist = 0.5 * math.sqrt(w1 ** 2 + h1 ** 2)
-
-        # Hoop should not move 0.5x its diameter within 5 frames
-        if dist > max_dist and f_dif < 5:
-            hoop_pos.pop()
-
-        # Hoop should be relatively square
-        if (w2*1.3 < h2) or (h2*1.3 < w2):
-            hoop_pos.pop()
-
-    # Remove old points
-    if len(hoop_pos) > 25:
-        hoop_pos.pop(0)
-
-    return hoop_pos  
