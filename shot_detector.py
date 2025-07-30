@@ -863,7 +863,24 @@ class ShotDetector:
             self.debug_logger.debug(f"🚫 Frame {self.frame_count}: Skipping UP/DOWN detection - no synchronized data")
             return
 
+        # 优先级最高的判断：如果球的宽度大于或等于篮筐的宽度，则排除为投篮。
+        # 这种情况意味着球比篮筐更靠近摄像头，不符合真实的投篮场景。
+        ball_width = self.selected_ball[2]
+        hoop_width = self.selected_hoop[2]
+
+        if ball_width >= hoop_width:
+            self.debug_logger.warning(
+                f"🚫 Frame {self.frame_count}: 投篮尝试无效。"
+                f"篮球宽度 ({ball_width:.1f}px) >= 篮筐宽度 ({hoop_width:.1f}px)。"
+                "篮球可能比篮筐更靠近摄像头。"
+            )
+            return  # 对于此帧，跳过后续的投篮检测
+
         self.debug_logger.debug(f"🔍 Frame {self.frame_count}: Performing UP/DOWN detection with synchronized data")
+
+        # 🔧 CRITICAL FIX: Save the exact hoop data used for UP/DOWN detection
+
+
 
         # 🔧 CRITICAL FIX: Save the exact hoop data used for UP/DOWN detection
         # This ensures visualization uses the same data as detection logic
