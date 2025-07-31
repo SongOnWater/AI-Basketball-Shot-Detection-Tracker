@@ -19,16 +19,17 @@ import os
 
 from logging_utils import DebugLogger, ShotLogger
 from object_class_mapper import object_class_mapper
+from ball_tracker import BallTracker
+from hoop_tracker import HoopTracker
+from shot_analyzer import ShotAnalyzer
 
 
 class ShotDetector:
     def __init__(self, input_video="video_test_5.mp4", output_video=None, ball_model_path="yolov8m.pt", hoop_model_path=None, person_model_path=None, use_shared_model=True, min_ball_area=400, enable_person_detection=False, model_config=None):
         import os
         # Load models for optimal detection
-        self.overlay_text = "Waiting..."
         self.use_shared_model = use_shared_model
 
-        # 不再在 ShotDetector 内部创建 debug_logger
         self.model_config = model_config
         self.enable_person_detection = enable_person_detection
 
@@ -37,21 +38,24 @@ class ShotDetector:
         self.ball_model = YOLO(ball_model_path)
         print(f"🏀 Loaded main model: {ball_model_path}")
         
-        # Print ball model classes
-        self.ball_model_classes = list(self.ball_model.names.values())
-        if 'sports ball' in [cls.lower() for cls in self.ball_model_classes]:
-            print(f"📋 Ball model classes: {len(self.ball_model_classes)} classes (including 'sports ball')")
-        else:
-            print(f"📋 Ball model classes: {len(self.ball_model_classes)} classes: {self.ball_model_classes}")
-
         # Load hoop detection model (use ball model if not specified)
         self.hoop_model_path = hoop_model_path if hoop_model_path else ball_model_path
         self.hoop_model = YOLO(self.hoop_model_path)
         print(f"🏀 Loaded hoop model: {self.hoop_model_path}")
         
+        # Initialize model classes
+        self.ball_model_classes = self.ball_model.names if hasattr(self.ball_model, 'names') else {0: "Basketball"}
+        self.hoop_model_classes = self.hoop_model.names if hasattr(self.hoop_model, 'names') else {0: "Basketball", 1: "Basketball Hoop"}
+        
+        # Print ball model classes
+        ball_classes_list = list(self.ball_model_classes.values())
+        if 'sports ball' in [cls.lower() for cls in ball_classes_list]:
+            print(f"📋 Ball model classes: {len(self.ball_model_classes)} classes (including 'sports ball')")
+        else:
+            print(f"📋 Ball model classes: {len(self.ball_model_classes)} classes: {ball_classes_list}")
+        
         # Print hoop model classes
-        self.hoop_model_classes = list(self.hoop_model.names.values())
-        print(f"📋 Hoop model classes: {self.hoop_model_classes}")
+        print(f"📋 Hoop model classes: {list(self.hoop_model_classes.values())}")
         
         # Print active hoop detection classes
         active_hoop_classes = object_class_mapper.get_class_names_for_type('hoop')
@@ -62,15 +66,24 @@ class ShotDetector:
             if use_shared_model:
                 self.person_model = self.ball_model  # Share the same model
                 self.person_model_path = ball_model_path
+                self.person_model_classes = self.ball_model.names if hasattr(self.ball_model, 'names') else {0: "person"}
                 print(f"👤 Using shared model for person detection: {ball_model_path}")
             else:
                 # Use separate person model if specified
                 self.person_model_path = person_model_path or "yolov8n.pt"
                 self.person_model = YOLO(self.person_model_path)
+                self.person_model_classes = self.person_model.names if hasattr(self.person_model, 'names') else {0: "person"}
                 print(f"👤 Loaded separate person model: {self.person_model_path}")
+                
+            # 打印人物检测类别
+            person_classes = [cls for cls in self.person_model_classes.values() 
+                             if 'person' in cls.lower()]
+            print(f"📋 Person model classes: {len(self.person_model_classes)} classes")
+            print(f"👤 Active person detection classes: {person_classes}")
         else:
             self.person_model = None
             self.person_model_path = None
+            self.person_model_classes = {0: "person"}  # 默认值，即使未启用也提供
             print(f"👤 Person detection disabled")
 
         # For backward compatibility, set primary model as ball model
@@ -85,6 +98,9 @@ class ShotDetector:
                 raise ValueError("Model name (ball_model_path) must be provided for output video file naming.")
             model_name = os.path.splitext(os.path.basename(ball_model_path))[0]
             timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+            # 安全处理文件名，移除不安全字符
+            video_name = ''.join(c for c in video_name if c.isalnum() or c in '._- ')
+            model_name = ''.join(c for c in model_name if c.isalnum() or c in '._- ')
             output_video = f"{video_name}_{model_name}_output_{timestamp}.mp4"
         self.output_video = output_video
         self.video_writer = None
@@ -97,36 +113,12 @@ class ShotDetector:
         self.debug_logger.debug_file_only("[ShotDetector] debug_logger now references ShotLogger's initialized logger.")
 
         # 设置最小球面积阈值
-        self.min_ball_area = 100  # 可根据需要调整此值
+        self.min_ball_area = min_ball_area  # 使用传入的参数值
 
-        # Uncomment this line to accelerate inference. Note that this may cause errors in some setups.
-        #self.model.half()
-        
-        # Initialize class names for both models
-        self.class_names = ['Basketball', 'Basketball Hoop', 'Rim']  # Extended with Rim detection
-
-        # Get class names from both models
-        if hasattr(self.ball_model, 'names'):
-            self.ball_model_classes = self.ball_model.names
-            print(f"📋 Ball model classes: {len(self.ball_model_classes)} classes (including 'sports ball')")
-        else:
-            self.ball_model_classes = {0: "Basketball"}
-
-        if hasattr(self.hoop_model, 'names'):
-            self.hoop_model_classes = self.hoop_model.names
-            # Filter and show only hoop-related classes that will be used for detection
-            hoop_classes = [cls for cls in self.hoop_model_classes.values()
-                           if 'hoop' in cls.lower() or 'rim' in cls.lower() or cls.lower() == 'basketball hoop']
-            
-            # 显示所有支持的篮筐类别，包括代码中硬编码的类别
-            supported_hoop_classes = ["Basketball Hoop", "hoop", "Rim"] + hoop_classes
-            # 去重
-            supported_hoop_classes = list(set(supported_hoop_classes))
-            
-            print(f"📋 Hoop model classes: {list(self.hoop_model_classes.values())}")
-            print(f"🎯 Active hoop detection classes: {supported_hoop_classes}")
-        else:
-            self.hoop_model_classes = {0: "Basketball", 1: "Basketball Hoop"}
+        # Initialize tracking components
+        self.ball_tracker = BallTracker(min_ball_area=self.min_ball_area, debug_logger=self.debug_logger)
+        self.hoop_tracker = HoopTracker(debug_logger=self.debug_logger)
+        self.shot_analyzer = ShotAnalyzer(debug_logger=self.debug_logger)
 
         if hasattr(self.person_model, 'names'):
             self.person_model_classes = self.person_model.names
@@ -148,13 +140,7 @@ class ShotDetector:
         self.frame_count = 0  # 添加frame_count初始化
         
         # Initialize tracking variables
-        self.ball_pos = []
-        self.hoop_pos = []
         self.person_pos = []
-        self.up = False
-        self.down = False
-        self.up_frame = 0
-        self.down_frame = 0
         self.selected_ball = None
         self.selected_hoop = None
         
@@ -170,6 +156,15 @@ class ShotDetector:
         # 使用PySceneDetect预先检测所有场景变化帧
         self.scene_change_frames = self.detect_scene_changes_pyscenedetect(input_video)
         self.debug_logger.info(f"🎬 预先检测到的场景变化帧: {self.scene_change_frames}")
+        
+        # 初始化篮网扰动检测相关变量
+        self.ball_in_hoop_area = False
+        self.ball_entered_hoop_frame = 0
+        self.net_reference_frame = None
+        self._net_disturbance_detected = False
+        
+        # 初始化前一帧变量
+        self.prev_frame = None
 
     def detect_scene_changes_pyscenedetect(self, video_path):
         """
@@ -203,15 +198,14 @@ class ShotDetector:
         Clean up motion data by removing inaccurate data points
         """
         # Clean ball position data
-        self.ball_pos = clean_ball_pos(self.ball_pos, self.frame_count)
+        self.ball_tracker.clean_motion(self.frame_count)
         
         # Clean hoop position data
-        self.hoop_pos = clean_hoop_pos(self.hoop_pos)
+        self.hoop_tracker.clean_motion()
         
         # Clean person position data if person detection is enabled
         if self.enable_person_detection and len(self.person_pos) > 30:
             self.person_pos.pop(0)
-
 
     def is_reasonable_ball_position(self, ball_data, frame_height=None):
         """
@@ -225,7 +219,10 @@ class ShotDetector:
             bool: True if position is reasonable, False otherwise
         """
         if frame_height is None:
-            if hasattr(self, 'frame') and self.frame is not None:
+            # 优先使用缓存的帧高度
+            if hasattr(self, 'frame_height') and self.frame_height > 0:
+                frame_height = self.frame_height
+            elif hasattr(self, 'frame') and self.frame is not None:
                 frame_height = self.frame.shape[0]
             else:
                 frame_height = 1080  # fallback if frame not available
@@ -252,43 +249,7 @@ class ShotDetector:
         Returns:
             tuple: 预测的球位置 (x, y) 或 None（如果历史数据不足）
         """
-        # 需要至少3个历史点来进行有效的轨迹拟合
-        if len(self.ball_pos) < 3:
-            self.debug_logger.debug_file_only(f"历史轨迹点不足，无法进行拟合预测: {len(self.ball_pos)} 点")
-            return None
-            
-        # 获取最近的N个历史点（最多10个点）
-        recent_history = self.ball_pos[-10:]
-        
-        # 提取坐标和帧号
-        x_coords = [pos[0][0] for pos in recent_history]
-        y_coords = [pos[0][1] for pos in recent_history]
-        frames = [pos[1] for pos in recent_history]
-        
-        # 检查是否有足够的不同帧
-        if len(set(frames)) < 3:
-            self.debug_logger.debug_file_only(f"历史轨迹中不同帧数不足，无法进行拟合预测")
-            return None
-            
-        try:
-            # 对X坐标进行多项式拟合（2阶）
-            x_poly = np.polyfit(frames, x_coords, 2)
-            x_poly_func = np.poly1d(x_poly)
-            
-            # 对Y坐标进行多项式拟合（2阶）
-            y_poly = np.polyfit(frames, y_coords, 2)
-            y_poly_func = np.poly1d(y_poly)
-            
-            # 预测当前帧的位置
-            predicted_x = x_poly_func(current_frame)
-            predicted_y = y_poly_func(current_frame)
-            
-            self.debug_logger.debug_file_only(f"轨迹拟合预测位置: ({predicted_x:.1f}, {predicted_y:.1f}) 在帧 {current_frame}")
-            
-            return (predicted_x, predicted_y)
-        except Exception as e:
-            self.debug_logger.warning(f"轨迹拟合预测失败: {e}")
-            return None
+        return self.ball_tracker.predict_ball_position_from_trajectory(current_frame)
 
     def is_ball_in_hoop_area(self, ball_pos, hoop_pos):
         """
@@ -301,22 +262,7 @@ class ShotDetector:
         Returns:
             bool: True if ball is in hoop area
         """
-        if not hoop_pos:
-            return False
-            
-        hoop_center = hoop_pos[0]  # (x, y)
-        hoop_width = hoop_pos[2]
-        hoop_height = hoop_pos[3]
-        
-        # Define hoop area (a bit larger than the actual hoop to account for errors)
-        x1 = hoop_center[0] - 0.6 * hoop_width
-        x2 = hoop_center[0] + 0.6 * hoop_width
-        y1 = hoop_center[1] - 0.6 * hoop_height
-        y2 = hoop_center[1] + 0.6 * hoop_height
-        
-        ball_x, ball_y = ball_pos
-        
-        return x1 <= ball_x <= x2 and y1 <= ball_y <= y2
+        return self.hoop_tracker.is_ball_in_hoop_area(ball_pos, hoop_pos)
 
     def detect_net_disturbance(self, prev_frame, curr_frame, hoop_region):
         """
@@ -330,32 +276,46 @@ class ShotDetector:
         Returns:
             float: Disturbance level (higher means more disturbance)
         """
-        x1, y1, x2, y2 = hoop_region
-        
-        # Ensure coordinates are within frame bounds
-        x1 = max(0, int(x1))
-        y1 = max(0, int(y1))
-        x2 = min(curr_frame.shape[1], int(x2))
-        y2 = min(curr_frame.shape[0], int(y2))
-        
-        # Extract hoop regions from both frames
-        if (y2 - y1) <= 0 or (x2 - x1) <= 0:
+        # 安全检查：确保输入帧有效
+        if prev_frame is None or curr_frame is None:
             return 0.0
             
+        # 获取区域坐标
+        x1, y1, x2, y2 = hoop_region
+        
+        # 确保坐标是整数
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+        
+        # 确保坐标在帧边界内
+        height, width = curr_frame.shape[:2]
+        x1 = max(0, min(x1, width-1))
+        y1 = max(0, min(y1, height-1))
+        x2 = max(0, min(x2, width-1))
+        y2 = max(0, min(y2, height-1))
+        
+        # 检查区域是否有效
+        if x2 <= x1 or y2 <= y1:
+            return 0.0
+            
+        # 提取两帧中的篮筐区域
         prev_region = prev_frame[y1:y2, x1:x2]
         curr_region = curr_frame[y1:y2, x1:x2]
         
-        # Convert to grayscale
-        prev_gray = cv2.cvtColor(prev_region, cv2.COLOR_BGR2GRAY)
-        curr_gray = cv2.cvtColor(curr_region, cv2.COLOR_BGR2GRAY)
+        # 转换为灰度图
+        try:
+            prev_gray = cv2.cvtColor(prev_region, cv2.COLOR_BGR2GRAY)
+            curr_gray = cv2.cvtColor(curr_region, cv2.COLOR_BGR2GRAY)
+        except cv2.error:
+            # 处理颜色转换错误
+            return 0.0
         
-        # Calculate absolute difference
+        # 计算绝对差异
         diff = cv2.absdiff(prev_gray, curr_gray)
         
-        # Apply threshold to highlight significant changes
+        # 应用阈值突出显著变化
         _, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
         
-        # Calculate the ratio of changed pixels
+        # 计算变化像素的比例
         changed_pixels = np.count_nonzero(thresh)
         total_pixels = thresh.shape[0] * thresh.shape[1]
         
@@ -387,20 +347,22 @@ class ShotDetector:
             return False
             
         # 2. Check if there was an UP state before
-        if not self.up:
+        if not self.shot_analyzer.up:
             self.debug_logger.debug_file_only("之前没有检测到UP状态，跳过篮网扰动检测")
             return False
             
         # 3. Check if the hoop is at the edge of the video
-        if not self.hoop_pos:
+        if not self.hoop_tracker.hoop_pos:
             self.debug_logger.debug_file_only("未检测到篮筐位置，无法进行篮网扰动检测")
             return False
             
-        current_hoop = self.hoop_pos[-1]
+        current_hoop = self.hoop_tracker.hoop_pos[-1]
         hoop_center = current_hoop[0]
         hoop_width = current_hoop[2]
-        frame_width = self.frame.shape[1] if self.frame is not None else 0
-        frame_height = self.frame.shape[0] if self.frame is not None else 0
+        
+        # 优先使用缓存的帧尺寸
+        frame_width = self.frame_width or (self.frame.shape[1] if self.frame is not None else 0)
+        frame_height = self.frame_height or (self.frame.shape[0] if self.frame is not None else 0)
         
         if frame_width == 0 or frame_height == 0:
             self.debug_logger.debug_file_only("无法获取帧尺寸，跳过篮网扰动检测")
@@ -499,277 +461,6 @@ class ShotDetector:
         """
         return False
 
-    def process_frame_detections(self, current_frame_balls, current_frame_hoops):
-        """
-        Process current frame detections and update selected values for UP/DOWN analysis
-        Only performs UP/DOWN detection when both ball and hoop are detected in same frame
-
-        Args:
-            current_frame_balls: List of ball detections in current frame
-            current_frame_hoops: List of hoop detections in current frame
-        """
-        # 🔧 FIX: Store current frame detections for visualization
-        self.current_frame_balls = current_frame_balls
-        self.current_frame_hoops = current_frame_hoops
-
-        # Store current frame as previous for next iteration
-        self.prev_frame = self.frame.copy() if self.frame is not None else None
-
-        self.debug_logger.debug_file_only(f"🔥 FORCE DEBUG: process_frame_detections called for frame {self.frame_count}")
-        self.debug_logger.debug_file_only(f"🔥 Input: {len(current_frame_balls)} balls, {len(current_frame_hoops)} hoops")
-
-        # Check for significant hoop position/size changes (possible video cut)
-        if len(self.hoop_pos) > 1 and len(current_frame_hoops) > 0:
-            last_hoop = self.hoop_pos[-1]
-            current_hoop = max(current_frame_hoops, key=lambda x: x['confidence'])
-            
-            # Calculate position and size differences
-            pos_diff = math.sqrt((last_hoop[0][0] - current_hoop['center'][0])**2 + 
-                                (last_hoop[0][1] - current_hoop['center'][1])**2)
-            size_diff = abs(last_hoop[2] - current_hoop['size']['width']) + \
-                       abs(last_hoop[3] - current_hoop['size']['height'])
-            
-            # 更严格的阈值设置，避免误报
-            # 只有当位置变化超过画面宽度的25%且大小变化显著时才认为是视频剪辑
-            frame_width = self.frame.shape[1] if self.frame is not None else 1920
-            frame_height = self.frame.shape[0] if self.frame is not None else 1080
-            pos_threshold = 0.25 * math.sqrt(frame_width**2 + frame_height**2)  # 对角线长度的25%
-            size_threshold = 1.0 * (last_hoop[2] + last_hoop[3])  # 更严格的大小变化阈值（100%）
-            
-            # 添加额外的条件：只有当置信度差异不大时才考虑是剪辑
-            conf_diff = abs(last_hoop[4] - current_hoop['confidence'])
-            
-            # 只有当位置和大小都发生剧烈变化，且置信度变化不大时，才认为是视频剪辑
-            if pos_diff > pos_threshold and size_diff > size_threshold and conf_diff < 0.2:
-                self.debug_logger.warning(f"⚠️ Frame {self.frame_count}: 检测到篮筐位置/大小显著变化 (位置差: {pos_diff:.1f}px > {pos_threshold:.1f}px 且大小差: {size_diff:.1f}px > {size_threshold:.1f}px)，可能是视频剪辑，重置跟踪数据")
-                # 记录视频剪辑事件
-                self.frame_logger.log_video_cut(self.frame_count)
-                self.ball_pos = []
-                self.hoop_pos = []
-                self.person_pos = []
-                self.up = False
-                self.down = False
-                self.up_frame = 0
-                self.down_frame = 0
-                self.selected_ball = None
-                self.selected_hoop = None
-                return
-        
-        # Select best detections from current frame
-        selected_ball_data, selected_hoop_data = self.select_best_detections_for_frame(
-            current_frame_balls, current_frame_hoops
-        )
-
-        self.debug_logger.debug(f"🔥 Selected: ball={bool(selected_ball_data)}, hoop={bool(selected_hoop_data)}")
-
-        if selected_ball_data and selected_hoop_data:
-            # 🔧 CRITICAL FIX: Apply same filtering logic as select_best_detections_for_frame
-            # Ensure ball meets quality requirements before UP/DOWN detection
-            if (selected_ball_data['confidence'] < 0.4 or
-                selected_ball_data.get('area', 0) < self.min_ball_area or
-                not self.is_reasonable_ball_position(selected_ball_data)):
-                self.debug_logger.warning(f"🚫 Frame {self.frame_count}: Ball filtered out in UP/DOWN detection")
-                self.debug_logger.warning(f"   Ball conf={selected_ball_data['confidence']:.2f}, pos={selected_ball_data['center']}")
-                selected_ball_data = None
-                selected_hoop_data = None
-
-        if selected_ball_data and selected_hoop_data:
-            # Convert to trajectory format (ensuring same frame)
-            self.selected_ball = (
-                (selected_ball_data['center'][0], selected_ball_data['center'][1]),
-                self.frame_count,  # Same frame
-                selected_ball_data['size']['width'],
-                selected_ball_data['size']['height'],
-                selected_ball_data['confidence']
-            )
-
-            self.selected_hoop = (
-                (selected_hoop_data['center'][0], selected_hoop_data['center'][1]),
-                self.frame_count,  # Same frame
-                selected_hoop_data['size']['width'],
-                selected_hoop_data['size']['height'],
-                selected_hoop_data['confidence']
-            )
-
-            # Debug: Verify frame numbers
-            self.debug_logger.debug(f"🔍 Frame {self.frame_count}: Creating selected data")
-            self.debug_logger.debug(f"  Selected ball frame: {self.selected_ball[1]}")
-            self.debug_logger.debug(f"  Selected hoop frame: {self.selected_hoop[1]}")
-            self.debug_logger.debug(f"  Ball: {self.selected_ball[0]} conf={self.selected_ball[4]:.2f}")
-            self.debug_logger.debug(f"  Hoop: {self.selected_hoop[0]} conf={self.selected_hoop[4]:.2f}")
-
-            # Add to trajectory arrays (now guaranteed to be synchronized)
-            self.ball_pos.append(self.selected_ball)
-            self.hoop_pos.append(self.selected_hoop)
-
-            # Perform UP/DOWN detection with synchronized data
-            self.shot_detection_with_selected()
-
-        else:
-            # No synchronized detection available in current frame
-            self.selected_ball = None
-            self.selected_hoop = None
-            
-            # Check for net disturbance based shot detection
-            # This will follow the exact sequence:
-            # 1. First check if no valid ball detected in current frame (no selected ball) - already confirmed
-            # 2. Then check if there was an UP state before
-            # 3. Then check if the hoop is at the edge of the video
-            # 4. Then predict ball position using trajectory fitting
-            # 5. If predicted position is in hoop, compare hoop region between frames for net disturbance
-            # 6. If disturbance is detected, count as successful shot
-            if self.check_hoop_disturbance_shot():
-                # Record the shot based on net disturbance
-                self.down = True
-                self.down_frame = self.frame_count
-                self.debug_logger.info(f"🏀 基于篮网扰动检测到进球，帧号: {self.frame_count}")
-                self.analyze_shot_attempt()
-            # Do not perform UP/DOWN detection, do not add to trajectory
-    def analyze_shot_attempt(self):
-        """Analyze shot attempt with safe state handling"""
-        if len(self.ball_pos) > 0 and len(self.hoop_pos) > 0:
-            debug_info = {}
-
-            # ✅ 使用局部值进行判断，防止状态被清零
-            up_frame = self.up_frame
-            down_frame = self.down_frame
-            is_valid = self.up and self.down and up_frame < down_frame
-
-            debug_info['shot_context'] = {
-                'up_frame': up_frame,
-                'down_frame': down_frame,
-                'is_valid_sequence': is_valid
-            }
-
-            if is_valid:
-                self.debug_logger.info(f"🔥 Valid shot sequence: UP@{up_frame} → DOWN@{down_frame}")
-                self.attempts += 1
-                is_successful = score(self.ball_pos, self.hoop_pos, debug_info)
-            else:
-                debug_info['failure_reason'] = "Invalid sequence or missing UP/DOWN states"
-                is_successful = False
-
-            # 🔧 状态只在**分析完成后**统一重置
-            self.up = False
-            self.down = False
-            self.up_frame = 0
-            self.down_frame = 0
-
-            timestamp = self.frame_count / 30
-            self.shot_logger.log_shot(
-                frame_idx=self.frame_count,
-                timestamp=timestamp,
-                ball_pos=self.ball_pos[-1][0] if self.ball_pos else None,
-                hoop_pos=self.hoop_pos[-1][0],
-                ball_confidence=self.ball_pos[-1][4],
-                is_successful=is_successful,
-                debug_info=debug_info
-            )
-
-            # 清理轨迹数据
-            self.ball_pos = []
-            self.hoop_pos = []
-            if self.enable_person_detection:
-                self.person_pos = []
-    def shot_detection_with_selected(self):
-        """
-        Perform UP/DOWN detection using synchronized selected data
-        Only called when both ball and hoop are detected in same frame
-        """
-        if not self.selected_ball or not self.selected_hoop:
-            return
-
-        # 🔧 修复：强制保留UP状态，防止被后续帧误清
-        # 使用局部变量记录UP状态，避免全局被重置
-        has_cached_up = self.up
-        has_cached_up_frame = self.up_frame
-
-        # UP detection（只有在未缓存状态下检测）
-        if not has_cached_up:
-            up_detected = self.detect_up_with_selected(self.selected_ball, self.selected_hoop)
-            if up_detected:
-                self.up = True
-                self.up_frame = self.frame_count
-                has_cached_up = True
-                has_cached_up_frame = self.frame_count
-                # 记录UP事件
-                self.frame_logger.log_up_event(self.frame_count)
-
-        # DOWN detection（只有在确认UP后才检测）
-        if has_cached_up and not self.down:
-            down_detected = self.detect_down_with_selected(self.selected_ball, self.selected_hoop)
-            if down_detected:
-                self.down = True
-                self.down_frame = self.frame_count
-                # 记录DOWN事件
-                self.frame_logger.log_down_event(self.frame_count)
-                # 🔧 修复：在进行投篮分析前，确保将当前帧的球添加到轨迹中
-                # 按照轨迹分析数据完整性规范，DOWN帧检测到的球必须被添加到轨迹数据中
-                if self.selected_ball and self.selected_hoop:
-                    # 确保当前选中的球和篮筐数据被添加到轨迹数组
-                    self.ball_pos.append(self.selected_ball)
-                    self.hoop_pos.append(self.selected_hoop)
-                
-                # ✅ 立即触发投篮分析，避免状态丢失
-                self.analyze_shot_attempt()
-    def detect_up_with_selected(self, selected_ball, selected_hoop):
-        """
-        Detect if ball is in UP region using synchronized data
-        
-        Args:
-            selected_ball: Ball detection data from current frame
-            selected_hoop: Hoop detection data from current frame
-            
-        Returns:
-            bool: True if ball is in UP region
-        """
-        # Extract data
-        ball_center = selected_ball[0]
-        ball_x, ball_y = ball_center
-        hoop_center = selected_hoop[0]
-        hoop_x, hoop_y = hoop_center
-        hoop_w = selected_hoop[2]
-        hoop_h = selected_hoop[3]
-
-        # Define UP region (around backboard/hoop area)
-        x1 = hoop_x - 4 * hoop_w
-        x2 = hoop_x + 4 * hoop_w
-        y1 = hoop_y - 2 * hoop_h
-        y2 = hoop_y - 0.5 * hoop_h
-
-        # Check if ball is in UP region
-        is_in_up_region = (x1 < ball_x < x2 and y1 < ball_y < y2)
-        self.debug_logger.debug(f"UP检测 - Frame {self.frame_count}: ball=({ball_x},{ball_y}), region=({x1:.1f},{y1:.1f}) to ({x2:.1f},{y2:.1f}), in_region={is_in_up_region}")
-        
-        return is_in_up_region
-
-    def detect_down_with_selected(self, selected_ball, selected_hoop):
-        """
-        Detect if ball is in DOWN region using synchronized data
-        
-        Args:
-            selected_ball: Ball detection data from current frame
-            selected_hoop: Hoop detection data from current frame
-            
-        Returns:
-            bool: True if ball is in DOWN region
-        """
-        # Extract data
-        ball_center = selected_ball[0]
-        ball_x, ball_y = ball_center
-        hoop_center = selected_hoop[0]
-        hoop_x, hoop_y = hoop_center
-        hoop_h = selected_hoop[3]
-
-        # Define DOWN region (below hoop)
-        rim_top_y = hoop_y - 0.5 * hoop_h
-        
-        # Check if ball is below the rim (in DOWN region)
-        is_in_down_region = (ball_y > rim_top_y)
-        self.debug_logger.debug(f"DOWN检测 - Frame {self.frame_count}: ball_y={ball_y:.1f}, threshold={rim_top_y:.1f} (hoop top edge), in_region={is_in_down_region}")
-        
-        return is_in_down_region
-
     def select_best_detections_for_frame(self, current_frame_balls, current_frame_hoops):
         """
         Select the best ball and hoop detections from current frame for UP/DOWN analysis
@@ -818,12 +509,12 @@ class ShotDetector:
             # 尝试使用轨迹拟合进行筛选（对每个球都进行检验）
             predicted_position = self.predict_ball_position_from_trajectory(self.frame_count)
             
-            if predicted_position and len(self.ball_pos) >= 3:  # 只有在有足够历史点时才使用轨迹预测
+            if predicted_position and len(self.ball_tracker.ball_pos) >= 3:  # 只有在有足够历史点时才使用轨迹预测
                 # 设置基础偏差阈值（像素）
                 base_deviation_threshold = 50  # 基础阈值
                 
                 # 获取拟合数据的帧序列最大值
-                recent_history = self.ball_pos[-10:]
+                recent_history = self.ball_tracker.ball_pos[-10:]
                 frames = [pos[1] for pos in recent_history]
                 max_history_frame = max(frames) if frames else self.frame_count
                 
@@ -959,36 +650,213 @@ class ShotDetector:
 
         return overlap_ratio
 
-    def detect_up_with_selected(self, selected_ball, selected_hoop):
+    def process_frame_detections(self, current_frame_balls, current_frame_hoops):
         """
-        Detect if ball is in UP region using synchronized data
-        
+        Process current frame detections and update selected values for UP/DOWN analysis
+        Only performs UP/DOWN detection when both ball and hoop are detected in same frame
+
         Args:
-            selected_ball: Ball detection data from current frame
-            selected_hoop: Hoop detection data from current frame
-            
-        Returns:
-            bool: True if ball is in UP region
+            current_frame_balls: List of ball detections in current frame
+            current_frame_hoops: List of hoop detections in current frame
         """
-        # Extract data
-        ball_center = selected_ball[0]
-        ball_x, ball_y = ball_center
-        hoop_center = selected_hoop[0]
-        hoop_x, hoop_y = hoop_center
-        hoop_w = selected_hoop[2]
-        hoop_h = selected_hoop[3]
+        # 🔧 FIX: Store current frame detections for visualization
+        self.current_frame_balls = current_frame_balls
+        self.current_frame_hoops = current_frame_hoops
 
-        # Define UP region (around backboard/hoop area)
-        x1 = hoop_x - 4 * hoop_w
-        x2 = hoop_x + 4 * hoop_w
-        y1 = hoop_y - 2 * hoop_h
-        y2 = hoop_y - 0.5 * hoop_h
+        # Store current frame as previous for next iteration (确保在处理前保存)
+        if self.frame is not None:
+            self.prev_frame = self.frame.copy()
 
-        # Check if ball is in UP region
-        is_in_up_region = (x1 < ball_x < x2 and y1 < ball_y < y2)
-        self.debug_logger.debug(f"UP检测 - Frame {self.frame_count}: ball=({ball_x},{ball_y}), region=({x1:.1f},{y1:.1f}) to ({x2:.1f},{y2:.1f}), in_region={is_in_up_region}")
+        self.debug_logger.debug_file_only(f"🔥 FORCE DEBUG: process_frame_detections called for frame {self.frame_count}")
+        self.debug_logger.debug_file_only(f"🔥 Input: {len(current_frame_balls)} balls, {len(current_frame_hoops)} hoops")
+
+        # Check for significant hoop position/size changes (possible video cut)
+        if len(self.hoop_tracker.hoop_pos) > 1 and len(current_frame_hoops) > 0:
+            last_hoop = self.hoop_tracker.hoop_pos[-1]
+            current_hoop = max(current_frame_hoops, key=lambda x: x['confidence'])
+            
+            # Calculate position and size differences
+            pos_diff = math.sqrt((last_hoop[0][0] - current_hoop['center'][0])**2 + 
+                                (last_hoop[0][1] - current_hoop['center'][1])**2)
+            size_diff = abs(last_hoop[2] - current_hoop['size']['width']) + \
+                       abs(last_hoop[3] - current_hoop['size']['height'])
+            
+            # 更严格的阈值设置，避免误报
+            # 只有当位置变化超过画面宽度的25%且大小变化显著时才认为是视频剪辑
+            frame_width = self.frame_width or (self.frame.shape[1] if self.frame is not None else 1920)
+            frame_height = self.frame_height or (self.frame.shape[0] if self.frame is not None else 1080)
+            pos_threshold = 0.25 * math.sqrt(frame_width**2 + frame_height**2)  # 对角线长度的25%
+            size_threshold = 1.0 * (last_hoop[2] + last_hoop[3])  # 更严格的大小变化阈值（100%）
+            
+            # 添加额外的条件：只有当置信度差异不大时才考虑是剪辑
+            conf_diff = abs(last_hoop[4] - current_hoop['confidence'])
+            
+            # 只有当位置和大小都发生剧烈变化，且置信度变化不大时，才认为是视频剪辑
+            if pos_diff > pos_threshold and size_diff > size_threshold and conf_diff < 0.2:
+                self.debug_logger.warning(f"⚠️ Frame {self.frame_count}: 检测到篮筐位置/大小显著变化 (位置差: {pos_diff:.1f}px > {pos_threshold:.1f}px 且大小差: {size_diff:.1f}px > {size_threshold:.1f}px)，可能是视频剪辑，重置跟踪数据")
+                # 记录视频剪辑事件
+                self.frame_logger.log_video_cut(self.frame_count)
+                self.ball_tracker.reset_tracking()
+                self.hoop_tracker.reset_tracking()
+                self.person_pos = []
+                self.shot_analyzer.reset_shot_detection()
+                return
         
-        return is_in_up_region
+        # Select best detections from current frame
+        selected_ball_data, selected_hoop_data = self.select_best_detections_for_frame(
+            current_frame_balls, current_frame_hoops
+        )
+
+        self.debug_logger.debug(f"🔥 Selected: ball={bool(selected_ball_data)}, hoop={bool(selected_hoop_data)}")
+
+        if selected_ball_data and selected_hoop_data:
+            # 🔧 CRITICAL FIX: Apply same filtering logic as select_best_detections_for_frame
+            # Ensure ball meets quality requirements before UP/DOWN detection
+            if (selected_ball_data['confidence'] < 0.4 or
+                selected_ball_data.get('area', 0) < self.min_ball_area or
+                not self.is_reasonable_ball_position(selected_ball_data)):
+                self.debug_logger.warning(f"🚫 Frame {self.frame_count}: Ball filtered out in UP/DOWN detection")
+                self.debug_logger.warning(f"   Ball conf={selected_ball_data['confidence']:.2f}, pos={selected_ball_data['center']}")
+                selected_ball_data = None
+                selected_hoop_data = None
+
+        if selected_ball_data and selected_hoop_data:
+            # Convert to trajectory format (ensuring same frame)
+            self.selected_ball = (
+                (selected_ball_data['center'][0], selected_ball_data['center'][1]),
+                self.frame_count,  # Same frame
+                selected_ball_data['size']['width'],
+                selected_ball_data['size']['height'],
+                selected_ball_data['confidence']
+            )
+
+            self.selected_hoop = (
+                (selected_hoop_data['center'][0], selected_hoop_data['center'][1]),
+                self.frame_count,  # Same frame
+                selected_hoop_data['size']['width'],
+                selected_hoop_data['size']['height'],
+                selected_hoop_data['confidence']
+            )
+
+            # Debug: Verify frame numbers
+            self.debug_logger.debug(f"🔍 Frame {self.frame_count}: Creating selected data")
+            self.debug_logger.debug(f"  Selected ball frame: {self.selected_ball[1]}")
+            self.debug_logger.debug(f"  Selected hoop frame: {self.selected_hoop[1]}")
+            self.debug_logger.debug(f"  Ball: {self.selected_ball[0]} conf={self.selected_ball[4]:.2f}")
+            self.debug_logger.debug(f"  Hoop: {self.selected_hoop[0]} conf={self.selected_hoop[4]:.2f}")
+
+            # Add to trajectory arrays (now guaranteed to be synchronized)
+            self.ball_tracker.add_ball_position(selected_ball_data, self.frame_count)
+            self.hoop_tracker.add_hoop_position(selected_hoop_data, self.frame_count)
+
+            # Perform UP/DOWN detection with synchronized data
+            self.shot_detection_with_selected()
+
+        else:
+            # No synchronized detection available in current frame
+            self.selected_ball = None
+            self.selected_hoop = None
+            
+            # Check for net disturbance based shot detection
+            # This will follow the exact sequence:
+            # 1. First check if no valid ball detected in current frame (no selected ball) - already confirmed
+            # 2. Then check if there was an UP state before
+            # 3. Then check if the hoop is at the edge of the video
+            # 4. Then predict ball position using trajectory fitting
+            # 5. If predicted position is in hoop, compare hoop region between frames for net disturbance
+            # 6. If disturbance is detected, count as successful shot
+            if self.check_hoop_disturbance_shot():
+                # Record the shot based on net disturbance
+                self.shot_analyzer.down = True
+                self.shot_analyzer.down_frame = self.frame_count
+                self.debug_logger.info(f"🏀 基于篮网扰动检测到进球，帧号: {self.frame_count}")
+                self.analyze_shot_attempt()
+            # Do not perform UP/DOWN detection, do not add to trajectory
+            
+    def analyze_shot_attempt(self):
+        """Analyze shot attempt with safe state handling"""
+        result = self.shot_analyzer.analyze_shot_attempt(
+            self.ball_tracker.ball_pos, 
+            self.hoop_tracker.hoop_pos
+        )
+        
+        # Update our local counters
+        self.makes = self.shot_analyzer.makes
+        self.attempts = self.shot_analyzer.attempts
+        self.overlay_color = self.shot_analyzer.overlay_color
+        self.overlay_text = self.shot_analyzer.overlay_text
+        self.fade_counter = self.shot_analyzer.fade_counter
+        
+        timestamp = self.frame_count / 30
+        
+        # 安全获取球和篮筐位置
+        ball_pos = None
+        if self.ball_tracker.ball_pos:
+            ball_pos = self.ball_tracker.ball_pos[-1][0]
+        
+        hoop_pos = None
+        hoop_confidence = 0.0
+        if self.hoop_tracker.hoop_pos:
+            hoop_pos = self.hoop_tracker.hoop_pos[-1][0]
+            hoop_confidence = self.hoop_tracker.hoop_pos[-1][4]
+        
+        self.shot_logger.log_shot(
+            frame_idx=self.frame_count,
+            timestamp=timestamp,
+            ball_pos=ball_pos,
+            hoop_pos=hoop_pos,
+            ball_confidence=self.ball_tracker.ball_pos[-1][4] if self.ball_tracker.ball_pos else 0.0,
+            is_successful=result['is_successful'],
+            debug_info=result['debug_info']
+        )
+
+        # 清理轨迹数据
+        self.ball_tracker.ball_pos = []
+        self.hoop_tracker.hoop_pos = []
+        if self.enable_person_detection:
+            self.person_pos = []
+            
+    def shot_detection_with_selected(self):
+        """
+        Perform UP/DOWN detection using synchronized selected data
+        Only called when both ball and hoop are detected in same frame
+        """
+        if not self.selected_ball or not self.selected_hoop:
+            return
+
+        # 🔧 修复：强制保留UP状态，防止被后续帧误清
+        # 使用局部变量记录UP状态，避免全局被重置
+        has_cached_up = self.shot_analyzer.up
+        has_cached_up_frame = self.shot_analyzer.up_frame
+
+        # UP detection（只有在未缓存状态下检测）
+        if not has_cached_up:
+            up_detected = self.shot_analyzer.detect_up(self.selected_ball, self.selected_hoop)
+            if up_detected:
+                self.shot_analyzer.up = True
+                self.shot_analyzer.up_frame = self.frame_count
+                has_cached_up = True
+                has_cached_up_frame = self.frame_count
+                # 记录UP事件
+                self.frame_logger.log_up_event(self.frame_count)
+
+        # DOWN detection（只有在确认UP后才检测）
+        if has_cached_up and not self.shot_analyzer.down:
+            down_detected = self.shot_analyzer.detect_down(self.selected_ball, self.selected_hoop)
+            if down_detected:
+                self.shot_analyzer.down = True
+                self.shot_analyzer.down_frame = self.frame_count
+                # 记录DOWN事件
+                self.frame_logger.log_down_event(self.frame_count)
+                # 🔧 修复：在进行投篮分析前，确保将当前帧的球添加到轨迹中
+                # 按照轨迹分析数据完整性规范，DOWN帧检测到的球必须被添加到轨迹数据中
+                if self.selected_ball and self.selected_hoop:
+                    # 确保当前选中的球和篮筐数据被添加到轨迹数组
+                    self.ball_tracker.ball_pos.append(self.selected_ball)
+                    self.hoop_tracker.hoop_pos.append(self.selected_hoop)
+                
+                # ✅ 立即触发投篮分析，避免状态丢失
+                self.analyze_shot_attempt()
 
     def display_score(self):
         # Add text
@@ -1037,6 +905,10 @@ class ShotDetector:
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 self.video_writer = cv2.VideoWriter(self.output_video, fourcc, 30.0, (width, height))
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Rewind to first frame
+        
+        # 缓存帧尺寸，避免重复计算
+        self.frame_width = 0
+        self.frame_height = 0
 
         # Initialize progress bar
         progress_bar = tqdm(total=self.total_frames, desc="Processing Video", unit='frames')
@@ -1049,6 +921,10 @@ class ShotDetector:
                 if self.video_writer:
                     self.video_writer.release()
                 break
+
+            # 更新帧尺寸缓存
+            if self.frame is not None:
+                self.frame_height, self.frame_width = self.frame.shape[:2]
 
 
             # Run detection models
@@ -1111,7 +987,7 @@ class ShotDetector:
                             })
 
                             # Draw detection rectangle for valid balls
-                            if ball_area >= self.min_ball_area and (conf > 0.4 or (in_hoop_region(center, self.hoop_pos) and conf > 0.2)):
+                            if ball_area >= self.min_ball_area and (conf > 0.4 or (in_hoop_region(center, self.hoop_tracker.hoop_pos) and conf > 0.2)):
                                 # Green box for all confidence detected balls
                                 cvzone.cornerRect(self.frame, (x1, y1, w, h), colorC=(0, 255, 0), t=2)
                                 self.debug_logger.debug_file_only(f"绘制普通球边界框: center={center}, frame={self.frame_count}")
@@ -1174,40 +1050,41 @@ class ShotDetector:
             raw_person_detections = []
 
             # If using separate person model, process its results
-            if not self.use_shared_model:
+            if not self.use_shared_model and self.enable_person_detection and self.person_model:
+                person_boxes = None
                 for r in person_results:
-                    boxes = r.boxes
-                if boxes is not None:
-                    for box in boxes:
-                        # Bounding box
-                        x1, y1, x2, y2 = box.xyxy[0]
-                        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-                        w, h = x2 - x1, y2 - y1
+                    person_boxes = r.boxes
+                    if person_boxes is not None:
+                        for box in person_boxes:
+                            # Bounding box
+                            x1, y1, x2, y2 = box.xyxy[0]
+                            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                            w, h = x2 - x1, y2 - y1
 
-                        # Confidence
-                        conf = math.ceil((box.conf[0] * 100)) / 100
+                            # Confidence
+                            conf = math.ceil((box.conf[0] * 100)) / 100
 
-                        # Class Name from person model
-                        cls = int(box.cls[0])
-                        if cls < len(self.person_model_classes):
-                            current_class = self.person_model_classes[cls]
-                        else:
-                            current_class = f"Unknown_{cls}"
+                            # Class Name from person model
+                            cls = int(box.cls[0])
+                            if cls < len(self.person_model_classes):
+                                current_class = self.person_model_classes[cls]
+                            else:
+                                current_class = f"Unknown_{cls}"
 
-                        center = (int(x1 + w / 2), int(y1 + h / 2))
+                            center = (int(x1 + w / 2), int(y1 + h / 2))
 
-                        # Check if this is a person using unified mapping
-                        is_person = object_class_mapper.is_object_type(current_class, 'person')
+                            # Check if this is a person using unified mapping
+                            is_person = object_class_mapper.is_object_type(current_class, 'person')
 
-                        if is_person and self.enable_person_detection and not self.use_shared_model and conf > 0.3:
-                            # Only add to raw_person_detections if using separate model and person detection is enabled
-                            raw_person_detections.append({
-                                "bbox": [x1, y1, x2, y2],
-                                "center": center,
-                                "size": {"width": w, "height": h},
-                                "confidence": float(conf),
-                                "class": current_class
-                            })
+                            if is_person and conf > 0.3:
+                                # Only add to raw_person_detections if using separate model and person detection is enabled
+                                raw_person_detections.append({
+                                    "bbox": [x1, y1, x2, y2],
+                                    "center": center,
+                                    "size": {"width": w, "height": h},
+                                    "confidence": float(conf),
+                                    "class": current_class
+                                })
 
             # Process person detections only if enabled
             if self.enable_person_detection:
@@ -1240,8 +1117,7 @@ class ShotDetector:
                                      scale=0.8, thickness=1, colorR=(0, 255, 0))
 
             # Update prev_frame for net disturbance detection
-            if self.frame is not None:
-                self.prev_frame = self.frame.copy()
+            # 移除这里的更新，因为已经在 process_frame_detections 中更新了
 
             # Check for scene change using frame difference (additional method)
             if self.prev_frame is not None and self.frame is not None:
@@ -1250,15 +1126,10 @@ class ShotDetector:
                     self.debug_logger.warning(f"⚠️ Frame {self.frame_count}: 检测到场景变化，可能是视频剪辑，重置跟踪数据")
                     # 记录视频剪辑事件（帧索引从0开始）
                     self.frame_logger.log_video_cut(self.frame_count)
-                    self.ball_pos = []
-                    self.hoop_pos = []
+                    self.ball_tracker.reset_tracking()
+                    self.hoop_tracker.reset_tracking()
                     self.person_pos = []
-                    self.up = False
-                    self.down = False
-                    self.up_frame = 0
-                    self.down_frame = 0
-                    self.selected_ball = None
-                    self.selected_hoop = None
+                    self.shot_analyzer.reset_shot_detection()
                     # Continue processing without returning, as we still want to process current frame detections
             # First clean existing motion data
             self.clean_motion()
@@ -1277,7 +1148,7 @@ class ShotDetector:
                 h = int(h)
                 cvzone.cornerRect(self.frame, (x1, y1, w, h), colorC=(255, 0, 0), t=3)
             # Draw ball trajectory points (red dots)
-            for pos in self.ball_pos:
+            for pos in self.ball_tracker.ball_pos:
                 center = pos[0]
                 cv2.circle(self.frame, center, 3, (0, 0, 255), -1)  # Red dots for history positions
             
@@ -1296,8 +1167,8 @@ class ShotDetector:
             self.frame_logger.frame_count = self.frame_count
 
             # Log frame data after processing
-            all_balls = self.ball_pos if hasattr(self, 'ball_pos') else []
-            all_hoops = self.hoop_pos if hasattr(self, 'hoop_pos') else []
+            all_balls = self.ball_tracker.ball_pos if hasattr(self.ball_tracker, 'ball_pos') else []
+            all_hoops = self.hoop_tracker.hoop_pos if hasattr(self.hoop_tracker, 'hoop_pos') else []
             all_persons = self.person_pos if hasattr(self, 'person_pos') and self.enable_person_detection else []
 
             # Determine selected indices based on new synchronized detection logic
@@ -1400,4 +1271,4 @@ if __name__ == "__main__":
 
     # Create detector with dual models
     detector = ShotDetector(args.input, args.output, ball_model, args.hoop_model)
-    detector.run()
+    detector.run() 
