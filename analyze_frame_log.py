@@ -32,13 +32,17 @@ class FrameLogAnalyzer:
         """Load and parse the frame log JSON file"""
         try:
             with open(self.log_file_path, 'r', encoding='utf-8') as f:
-                self.data = json.load(f)
-            print(f"✅ Successfully loaded {len(self.data)} frames from {self.log_file_path}")
+                raw_data = json.load(f)
+                # Extract frames from the structured data
+                self.data = raw_data.get('frames', [])
+            from debug_logger import DebugLogger
+            debug_logger = DebugLogger("frame_log_analyzer")
+            debug_logger.info(f"[INFO] Successfully loaded {len(self.data)} frames from {self.log_file_path}", frame_count=0)
         except FileNotFoundError:
-            print(f"❌ Error: File {self.log_file_path} not found")
+            debug_logger.error(f"[ERROR] File {self.log_file_path} not found", frame_count=0)
             return False
         except json.JSONDecodeError as e:
-            print(f"❌ Error: Invalid JSON format - {e}")
+            debug_logger.error(f"[ERROR] Invalid JSON format - {e}", frame_count=0)
             return False
         return True
     
@@ -47,20 +51,14 @@ class FrameLogAnalyzer:
         if not self.data:
             return
             
-        print("\n" + "="*60)
-        print("📊 BASIC STATISTICS")
-        print("="*60)
+        from debug_logger import DebugLogger
+        debug_logger = DebugLogger("frame_log_analyzer")
+        debug_logger.info("\n" + "="*60, frame_count=0)
+        debug_logger.info("[Statistics] BASIC STATISTICS", frame_count=0)
+        debug_logger.info("="*60, frame_count=0)
         
         total_frames = len(self.data)
-        print(f"Total frames analyzed: {total_frames}")
-        
-        # Time span
-        if total_frames > 0:
-            start_time = self.data[0]['timestamp']
-            end_time = self.data[-1]['timestamp']
-            duration = end_time - start_time
-            print(f"Video duration: {duration:.2f} seconds ({duration/60:.2f} minutes)")
-            print(f"Frame rate: {total_frames/duration:.1f} fps")
+        debug_logger.info(f"Total frames analyzed: {total_frames}", frame_count=0)
         
         # Detection statistics
         frames_with_balls = 0
@@ -68,129 +66,138 @@ class FrameLogAnalyzer:
         frames_with_current_balls = 0
         frames_with_current_hoops = 0
         
-        total_trajectory_balls = 0
-        total_trajectory_hoops = 0
+        total_ball_positions = 0
+        total_hoop_positions = 0
         total_current_balls = 0
         total_current_hoops = 0
         
         for frame in self.data:
             # Check if this is the new data structure
-            if 'current_detections' not in frame:
-                print("❌ Error: This appears to be an old format frame log file.")
-                print("   Please regenerate the frame log with the updated shot_detector.py")
+            if 'current_frame_balls' not in frame:
+                debug_logger.error("[Error] Unexpected frame data structure", frame_count=0)
                 return
 
-            # Trajectory data (historical)
-            if frame.get('trajectory_balls'):
+            # Ball positions (historical)
+            ball_positions = frame.get('ball_positions', [])
+            if ball_positions:
                 frames_with_balls += 1
-                total_trajectory_balls += len(frame['trajectory_balls'])
+                total_ball_positions += len(ball_positions)
 
-            if frame.get('trajectory_hoops'):
+            # Hoop positions (historical)
+            hoop_positions = frame.get('hoop_positions', [])
+            if hoop_positions:
                 frames_with_hoops += 1
-                total_trajectory_hoops += len(frame['trajectory_hoops'])
+                total_hoop_positions += len(hoop_positions)
 
             # Current frame detections
-            current_detections = frame.get('current_detections', {})
-            if current_detections.get('balls'):
+            current_balls = frame.get('current_frame_balls', [])
+            if current_balls:
                 frames_with_current_balls += 1
-                total_current_balls += len(current_detections['balls'])
+                total_current_balls += len(current_balls)
 
-            if current_detections.get('hoops'):
+            current_hoops = frame.get('current_frame_hoops', [])
+            if current_hoops:
                 frames_with_current_hoops += 1
-                total_current_hoops += len(current_detections['hoops'])
+                total_current_hoops += len(current_hoops)
         
-        print(f"\n📍 TRAJECTORY DATA (Historical Points):")
-        print(f"  Frames with ball trajectory: {frames_with_balls} ({frames_with_balls/total_frames*100:.1f}%)")
-        print(f"  Frames with hoop trajectory: {frames_with_hoops} ({frames_with_hoops/total_frames*100:.1f}%)")
-        print(f"  Total trajectory ball points: {total_trajectory_balls}")
-        print(f"  Total trajectory hoop points: {total_trajectory_hoops}")
-        print(f"  Avg ball points per frame: {total_trajectory_balls/total_frames:.2f}")
-        print(f"  Avg hoop points per frame: {total_trajectory_hoops/total_frames:.2f}")
+        debug_logger.info(f"\n[History] HISTORICAL BALL/HOOP POSITIONS:", frame_count=0)
+        debug_logger.info(f"  Frames with ball positions: {frames_with_balls} ({frames_with_balls/total_frames*100:.1f}%)", frame_count=0)
+        debug_logger.info(f"  Frames with hoop positions: {frames_with_hoops} ({frames_with_hoops/total_frames*100:.1f}%)", frame_count=0)
+        debug_logger.info(f"  Total ball positions: {total_ball_positions}", frame_count=0)
+        debug_logger.info(f"  Total hoop positions: {total_hoop_positions}", frame_count=0)
+        debug_logger.info(f"  Avg ball positions per frame: {total_ball_positions/total_frames:.2f}", frame_count=0)
+        debug_logger.info(f"  Avg hoop positions per frame: {total_hoop_positions/total_frames:.2f}", frame_count=0)
         
-        print(f"\n🎯 CURRENT FRAME DETECTIONS (YOLO Raw Output):")
-        print(f"  Frames with ball detections: {frames_with_current_balls} ({frames_with_current_balls/total_frames*100:.1f}%)")
-        print(f"  Frames with hoop detections: {frames_with_current_hoops} ({frames_with_current_hoops/total_frames*100:.1f}%)")
-        print(f"  Total current ball detections: {total_current_balls}")
-        print(f"  Total current hoop detections: {total_current_hoops}")
-        print(f"  Avg ball detections per frame: {total_current_balls/total_frames:.2f}")
-        print(f"  Avg hoop detections per frame: {total_current_hoops/total_frames:.2f}")
+        debug_logger.info(f"\n[Detection] CURRENT FRAME DETECTIONS (YOLO Raw Output):", frame_count=0)
+        debug_logger.info(f"  Frames with ball detections: {frames_with_current_balls} ({frames_with_current_balls/total_frames*100:.1f}%)", frame_count=0)
+        debug_logger.info(f"  Frames with hoop detections: {frames_with_current_hoops} ({frames_with_current_hoops/total_frames*100:.1f}%)", frame_count=0)
+        debug_logger.info(f"  Total current ball detections: {total_current_balls}", frame_count=0)
+        debug_logger.info(f"  Total current hoop detections: {total_current_hoops}", frame_count=0)
+        debug_logger.info(f"  Avg ball detections per frame: {total_current_balls/total_frames:.2f}", frame_count=0)
+        debug_logger.info(f"  Avg hoop detections per frame: {total_current_hoops/total_frames:.2f}", frame_count=0)
     
     def confidence_analysis(self):
         """Analyze confidence scores of detections"""
         if not self.data:
             return
             
-        print("\n" + "="*60)
-        print("🎯 CONFIDENCE ANALYSIS")
-        print("="*60)
+        from debug_logger import DebugLogger
+        debug_logger = DebugLogger("frame_log_analyzer")
+        debug_logger.info("\n" + "="*60, frame_count=0)
+        debug_logger.info("[Confidence] CONFIDENCE ANALYSIS", frame_count=0)
+        debug_logger.info("="*60, frame_count=0)
         
         ball_confidences = []
         hoop_confidences = []
-        trajectory_ball_confidences = []
-        trajectory_hoop_confidences = []
+        position_ball_confidences = []
+        position_hoop_confidences = []
         
         for frame in self.data:
             # Current frame detections
-            current_detections = frame.get('current_detections', {})
-            for ball in current_detections.get('balls', []):
+            current_balls = frame.get('current_frame_balls', [])
+            for ball in current_balls:
                 ball_confidences.append(ball['confidence'])
             
-            for hoop in current_detections.get('hoops', []):
+            current_hoops = frame.get('current_frame_hoops', [])
+            for hoop in current_hoops:
                 hoop_confidences.append(hoop['confidence'])
             
-            # Trajectory data
-            for ball in frame.get('trajectory_balls', []):
-                trajectory_ball_confidences.append(ball['confidence'])
+            # Position data (historical)
+            ball_positions = frame.get('ball_positions', [])
+            for ball in ball_positions:
+                position_ball_confidences.append(ball['confidence'])
                 
-            for hoop in frame.get('trajectory_hoops', []):
-                trajectory_hoop_confidences.append(hoop['confidence'])
+            hoop_positions = frame.get('hoop_positions', [])
+            for hoop in hoop_positions:
+                position_hoop_confidences.append(hoop['confidence'])
         
         # Current frame detections analysis
         if ball_confidences:
-            print(f"\n🏀 CURRENT FRAME BALL DETECTIONS:")
-            print(f"  Count: {len(ball_confidences)}")
-            print(f"  Confidence - Min: {min(ball_confidences):.3f}, Max: {max(ball_confidences):.3f}")
-            print(f"  Confidence - Mean: {np.mean(ball_confidences):.3f}, Std: {np.std(ball_confidences):.3f}")
-            print(f"  Above 0.5: {sum(1 for c in ball_confidences if c > 0.5)} ({sum(1 for c in ball_confidences if c > 0.5)/len(ball_confidences)*100:.1f}%)")
+            debug_logger.info(f"\n[Ball Detection] CURRENT FRAME BALL DETECTIONS:", frame_count=0)
+            debug_logger.info(f"  Count: {len(ball_confidences)}", frame_count=0)
+            debug_logger.info(f"  Confidence - Min: {min(ball_confidences):.3f}, Max: {max(ball_confidences):.3f}", frame_count=0)
+            debug_logger.info(f"  Confidence - Mean: {np.mean(ball_confidences):.3f}, Std: {np.std(ball_confidences):.3f}", frame_count=0)
+            debug_logger.info(f"  Above 0.5: {sum(1 for c in ball_confidences if c > 0.5)} ({sum(1 for c in ball_confidences if c > 0.5)/len(ball_confidences)*100:.1f}%)", frame_count=0)
         
         if hoop_confidences:
-            print(f"\n🏀 CURRENT FRAME HOOP DETECTIONS:")
-            print(f"  Count: {len(hoop_confidences)}")
-            print(f"  Confidence - Min: {min(hoop_confidences):.3f}, Max: {max(hoop_confidences):.3f}")
-            print(f"  Confidence - Mean: {np.mean(hoop_confidences):.3f}, Std: {np.std(hoop_confidences):.3f}")
-            print(f"  Above 0.6: {sum(1 for c in hoop_confidences if c > 0.6)} ({sum(1 for c in hoop_confidences if c > 0.6)/len(hoop_confidences)*100:.1f}%)")
+            debug_logger.info(f"\n[Hoop Detection] CURRENT FRAME HOOP DETECTIONS:", frame_count=0)
+            debug_logger.info(f"  Count: {len(hoop_confidences)}", frame_count=0)
+            debug_logger.info(f"  Confidence - Min: {min(hoop_confidences):.3f}, Max: {max(hoop_confidences):.3f}", frame_count=0)
+            debug_logger.info(f"  Confidence - Mean: {np.mean(hoop_confidences):.3f}, Std: {np.std(hoop_confidences):.3f}", frame_count=0)
+            debug_logger.info(f"  Above 0.6: {sum(1 for c in hoop_confidences if c > 0.6)} ({sum(1 for c in hoop_confidences if c > 0.6)/len(hoop_confidences)*100:.1f}%)", frame_count=0)
         
-        # Trajectory data analysis
-        if trajectory_ball_confidences:
-            print(f"\n📍 TRAJECTORY BALL POINTS:")
-            print(f"  Count: {len(trajectory_ball_confidences)}")
-            print(f"  Confidence - Min: {min(trajectory_ball_confidences):.3f}, Max: {max(trajectory_ball_confidences):.3f}")
-            print(f"  Confidence - Mean: {np.mean(trajectory_ball_confidences):.3f}, Std: {np.std(trajectory_ball_confidences):.3f}")
+        # Position data analysis
+        if position_ball_confidences:
+            debug_logger.info(f"\n[Ball Position] HISTORICAL BALL POSITIONS:", frame_count=0)
+            debug_logger.info(f"  Count: {len(position_ball_confidences)}", frame_count=0)
+            debug_logger.info(f"  Confidence - Min: {min(position_ball_confidences):.3f}, Max: {max(position_ball_confidences):.3f}", frame_count=0)
+            debug_logger.info(f"  Confidence - Mean: {np.mean(position_ball_confidences):.3f}, Std: {np.std(position_ball_confidences):.3f}", frame_count=0)
         
-        if trajectory_hoop_confidences:
-            print(f"\n📍 TRAJECTORY HOOP POINTS:")
-            print(f"  Count: {len(trajectory_hoop_confidences)}")
-            print(f"  Confidence - Min: {min(trajectory_hoop_confidences):.3f}, Max: {max(trajectory_hoop_confidences):.3f}")
-            print(f"  Confidence - Mean: {np.mean(trajectory_hoop_confidences):.3f}, Std: {np.std(trajectory_hoop_confidences):.3f}")
+        if position_hoop_confidences:
+            debug_logger.info(f"\n[Hoop Position] HISTORICAL HOOP POSITIONS:", frame_count=0)
+            debug_logger.info(f"  Count: {len(position_hoop_confidences)}", frame_count=0)
+            debug_logger.info(f"  Confidence - Min: {min(position_hoop_confidences):.3f}, Max: {max(position_hoop_confidences):.3f}", frame_count=0)
+            debug_logger.info(f"  Confidence - Mean: {np.mean(position_hoop_confidences):.3f}, Std: {np.std(position_hoop_confidences):.3f}", frame_count=0)
     
     def detection_timeline(self):
         """Analyze detection patterns over time"""
         if not self.data:
             return
             
-        print("\n" + "="*60)
-        print("⏱️ DETECTION TIMELINE ANALYSIS")
-        print("="*60)
+        from debug_logger import DebugLogger
+        debug_logger = DebugLogger("frame_log_analyzer")
+        debug_logger.info("\n" + "="*60, frame_count=0)
+        debug_logger.info("[Timeline] DETECTION TIMELINE ANALYSIS", frame_count=0)
+        debug_logger.info("="*60, frame_count=0)
         
         timeline_data = []
         for frame in self.data:
             frame_info = {
-                'frame': frame['frame'],
-                'timestamp': frame['timestamp'],
-                'current_balls': len(frame.get('current_detections', {}).get('balls', [])),
-                'current_hoops': len(frame.get('current_detections', {}).get('hoops', [])),
-                'trajectory_balls': len(frame.get('trajectory_balls', [])),
-                'trajectory_hoops': len(frame.get('trajectory_hoops', []))
+                'frame': frame['frame_idx'],
+                'current_balls': len(frame.get('current_frame_balls', [])),
+                'current_hoops': len(frame.get('current_frame_hoops', [])),
+                'ball_positions': len(frame.get('ball_positions', [])),
+                'hoop_positions': len(frame.get('hoop_positions', []))
             }
             timeline_data.append(frame_info)
         
@@ -198,95 +205,71 @@ class FrameLogAnalyzer:
         high_activity_frames = [f for f in timeline_data if f['current_balls'] > 0 or f['current_hoops'] > 0]
         
         if high_activity_frames:
-            print(f"Frames with detections: {len(high_activity_frames)}")
-            print(f"Detection rate: {len(high_activity_frames)/len(timeline_data)*100:.1f}%")
-            
-            # Find continuous detection periods
-            detection_periods = []
-            current_period = None
-            
-            for frame_info in timeline_data:
-                has_detection = frame_info['current_balls'] > 0 or frame_info['current_hoops'] > 0
-                
-                if has_detection:
-                    if current_period is None:
-                        current_period = {'start': frame_info['timestamp'], 'end': frame_info['timestamp']}
-                    else:
-                        current_period['end'] = frame_info['timestamp']
-                else:
-                    if current_period is not None:
-                        detection_periods.append(current_period)
-                        current_period = None
-            
-            if current_period is not None:
-                detection_periods.append(current_period)
-            
-            if detection_periods:
-                print(f"\nDetection periods: {len(detection_periods)}")
-                for i, period in enumerate(detection_periods[:5]):  # Show first 5
-                    duration = period['end'] - period['start']
-                    print(f"  Period {i+1}: {period['start']:.2f}s - {period['end']:.2f}s (duration: {duration:.2f}s)")
-                if len(detection_periods) > 5:
-                    print(f"  ... and {len(detection_periods) - 5} more periods")
+            debug_logger.info(f"Frames with detections: {len(high_activity_frames)}", frame_count=0)
+            debug_logger.info(f"Detection rate: {len(high_activity_frames)/len(timeline_data)*100:.1f}%", frame_count=0)
 
     def detection_comparison(self):
-        """Compare trajectory data vs current frame detections"""
+        """Compare position data vs current frame detections"""
         if not self.data:
             return
 
-        print("\n" + "="*60)
-        print("🔄 TRAJECTORY vs CURRENT DETECTIONS COMPARISON")
-        print("="*60)
+        from debug_logger import DebugLogger
+        debug_logger = DebugLogger("frame_log_analyzer")
+        debug_logger.info("\n" + "="*60, frame_count=0)
+        debug_logger.info("[Comparison] HISTORICAL POSITIONS vs CURRENT DETECTIONS COMPARISON", frame_count=0)
+        debug_logger.info("="*60, frame_count=0)
 
         frames_with_both_ball = 0
         frames_with_both_hoop = 0
-        frames_trajectory_only_ball = 0
-        frames_trajectory_only_hoop = 0
+        frames_positions_only_ball = 0
+        frames_positions_only_hoop = 0
         frames_current_only_ball = 0
         frames_current_only_hoop = 0
 
         for frame in self.data:
-            has_trajectory_balls = len(frame.get('trajectory_balls', [])) > 0
-            has_trajectory_hoops = len(frame.get('trajectory_hoops', [])) > 0
-            has_current_balls = len(frame.get('current_detections', {}).get('balls', [])) > 0
-            has_current_hoops = len(frame.get('current_detections', {}).get('hoops', [])) > 0
+            has_ball_positions = len(frame.get('ball_positions', [])) > 0
+            has_hoop_positions = len(frame.get('hoop_positions', [])) > 0
+            has_current_balls = len(frame.get('current_frame_balls', [])) > 0
+            has_current_hoops = len(frame.get('current_frame_hoops', [])) > 0
 
             # Ball comparison
-            if has_trajectory_balls and has_current_balls:
+            if has_ball_positions and has_current_balls:
                 frames_with_both_ball += 1
-            elif has_trajectory_balls and not has_current_balls:
-                frames_trajectory_only_ball += 1
-            elif not has_trajectory_balls and has_current_balls:
+            elif has_ball_positions and not has_current_balls:
+                frames_positions_only_ball += 1
+            elif not has_ball_positions and has_current_balls:
                 frames_current_only_ball += 1
 
             # Hoop comparison
-            if has_trajectory_hoops and has_current_hoops:
+            if has_hoop_positions and has_current_hoops:
                 frames_with_both_hoop += 1
-            elif has_trajectory_hoops and not has_current_hoops:
-                frames_trajectory_only_hoop += 1
-            elif not has_trajectory_hoops and has_current_hoops:
+            elif has_hoop_positions and not has_current_hoops:
+                frames_positions_only_hoop += 1
+            elif not has_hoop_positions and has_current_hoops:
                 frames_current_only_hoop += 1
 
         total_frames = len(self.data)
 
-        print(f"🏀 BALL DETECTION COMPARISON:")
-        print(f"  Both trajectory & current: {frames_with_both_ball} ({frames_with_both_ball/total_frames*100:.1f}%)")
-        print(f"  Trajectory only: {frames_trajectory_only_ball} ({frames_trajectory_only_ball/total_frames*100:.1f}%)")
-        print(f"  Current detection only: {frames_current_only_ball} ({frames_current_only_ball/total_frames*100:.1f}%)")
+        debug_logger.info(f"[Ball Comparison] BALL DATA COMPARISON:", frame_count=0)
+        debug_logger.info(f"  Both historical & current: {frames_with_both_ball} ({frames_with_both_ball/total_frames*100:.1f}%)", frame_count=0)
+        debug_logger.info(f"  Historical positions only: {frames_positions_only_ball} ({frames_positions_only_ball/total_frames*100:.1f}%)", frame_count=0)
+        debug_logger.info(f"  Current detection only: {frames_current_only_ball} ({frames_current_only_ball/total_frames*100:.1f}%)", frame_count=0)
 
-        print(f"\n🏀 HOOP DETECTION COMPARISON:")
-        print(f"  Both trajectory & current: {frames_with_both_hoop} ({frames_with_both_hoop/total_frames*100:.1f}%)")
-        print(f"  Trajectory only: {frames_trajectory_only_hoop} ({frames_trajectory_only_hoop/total_frames*100:.1f}%)")
-        print(f"  Current detection only: {frames_current_only_hoop} ({frames_current_only_hoop/total_frames*100:.1f}%)")
+        debug_logger.info(f"\n[Hoop Comparison] HOOP DATA COMPARISON:", frame_count=0)
+        debug_logger.info(f"  Both historical & current: {frames_with_both_hoop} ({frames_with_both_hoop/total_frames*100:.1f}%)", frame_count=0)
+        debug_logger.info(f"  Historical positions only: {frames_positions_only_hoop} ({frames_positions_only_hoop/total_frames*100:.1f}%)", frame_count=0)
+        debug_logger.info(f"  Current detection only: {frames_current_only_hoop} ({frames_current_only_hoop/total_frames*100:.1f}%)", frame_count=0)
 
     def bbox_size_analysis(self):
         """Analyze bounding box sizes of current detections"""
         if not self.data:
             return
 
-        print("\n" + "="*60)
-        print("📏 BOUNDING BOX SIZE ANALYSIS")
-        print("="*60)
+        from debug_logger import DebugLogger
+        debug_logger = DebugLogger("frame_log_analyzer")
+        debug_logger.info("\n" + "="*60, frame_count=0)
+        debug_logger.info("[Size] BOUNDING BOX SIZE ANALYSIS", frame_count=0)
+        debug_logger.info("="*60, frame_count=0)
 
         ball_sizes = []
         hoop_sizes = []
@@ -294,14 +277,14 @@ class FrameLogAnalyzer:
         hoop_areas = []
 
         for frame in self.data:
-            current_detections = frame.get('current_detections', {})
-
-            for ball in current_detections.get('balls', []):
+            current_balls = frame.get('current_frame_balls', [])
+            for ball in current_balls:
                 size = ball['size']
                 ball_sizes.append((size['width'], size['height']))
                 ball_areas.append(size['width'] * size['height'])
 
-            for hoop in current_detections.get('hoops', []):
+            current_hoops = frame.get('current_frame_hoops', [])
+            for hoop in current_hoops:
                 size = hoop['size']
                 hoop_sizes.append((size['width'], size['height']))
                 hoop_areas.append(size['width'] * size['height'])
@@ -309,28 +292,28 @@ class FrameLogAnalyzer:
         if ball_sizes:
             widths = [s[0] for s in ball_sizes]
             heights = [s[1] for s in ball_sizes]
-            print(f"\n🏀 BALL BOUNDING BOXES:")
-            print(f"  Count: {len(ball_sizes)}")
-            print(f"  Width - Min: {min(widths)}, Max: {max(widths)}, Mean: {np.mean(widths):.1f}")
-            print(f"  Height - Min: {min(heights)}, Max: {max(heights)}, Mean: {np.mean(heights):.1f}")
-            print(f"  Area - Min: {min(ball_areas)}, Max: {max(ball_areas)}, Mean: {np.mean(ball_areas):.1f}")
+            debug_logger.info(f"\n[Ball Size] BALL BOUNDING BOXES:", frame_count=0)
+            debug_logger.info(f"  Count: {len(ball_sizes)}", frame_count=0)
+            debug_logger.info(f"  Width - Min: {min(widths)}, Max: {max(widths)}, Mean: {np.mean(widths):.1f}", frame_count=0)
+            debug_logger.info(f"  Height - Min: {min(heights)}, Max: {max(heights)}, Mean: {np.mean(heights):.1f}", frame_count=0)
+            debug_logger.info(f"  Area - Min: {min(ball_areas)}, Max: {max(ball_areas)}, Mean: {np.mean(ball_areas):.1f}", frame_count=0)
 
             # Aspect ratio analysis
             aspect_ratios = [w/h for w, h in ball_sizes]
-            print(f"  Aspect Ratio - Min: {min(aspect_ratios):.2f}, Max: {max(aspect_ratios):.2f}, Mean: {np.mean(aspect_ratios):.2f}")
+            debug_logger.info(f"  Aspect Ratio - Min: {min(aspect_ratios):.2f}, Max: {max(aspect_ratios):.2f}, Mean: {np.mean(aspect_ratios):.2f}", frame_count=0)
 
         if hoop_sizes:
             widths = [s[0] for s in hoop_sizes]
             heights = [s[1] for s in hoop_sizes]
-            print(f"\n🏀 HOOP BOUNDING BOXES:")
-            print(f"  Count: {len(hoop_sizes)}")
-            print(f"  Width - Min: {min(widths)}, Max: {max(widths)}, Mean: {np.mean(widths):.1f}")
-            print(f"  Height - Min: {min(heights)}, Max: {max(heights)}, Mean: {np.mean(heights):.1f}")
-            print(f"  Area - Min: {min(hoop_areas)}, Max: {max(hoop_areas)}, Mean: {np.mean(hoop_areas):.1f}")
+            debug_logger.info(f"\n[Hoop Size] HOOP BOUNDING BOXES:", frame_count=0)
+            debug_logger.info(f"  Count: {len(hoop_sizes)}", frame_count=0)
+            debug_logger.info(f"  Width - Min: {min(widths)}, Max: {max(widths)}, Mean: {np.mean(widths):.1f}", frame_count=0)
+            debug_logger.info(f"  Height - Min: {min(heights)}, Max: {max(heights)}, Mean: {np.mean(heights):.1f}", frame_count=0)
+            debug_logger.info(f"  Area - Min: {min(hoop_areas)}, Max: {max(hoop_areas)}, Mean: {np.mean(hoop_areas):.1f}", frame_count=0)
 
             # Aspect ratio analysis
             aspect_ratios = [w/h for w, h in hoop_sizes]
-            print(f"  Aspect Ratio - Min: {min(aspect_ratios):.2f}, Max: {max(aspect_ratios):.2f}, Mean: {np.mean(aspect_ratios):.2f}")
+            debug_logger.info(f"  Aspect Ratio - Min: {min(aspect_ratios):.2f}, Max: {max(aspect_ratios):.2f}, Mean: {np.mean(aspect_ratios):.2f}", frame_count=0)
 
     def generate_report(self, output_file=None):
         """Generate a comprehensive analysis report"""
@@ -338,11 +321,14 @@ class FrameLogAnalyzer:
             print("❌ No data loaded. Cannot generate report.")
             return
         
-        print("\n" + "="*60)
-        print("📋 BASKETBALL SHOT DETECTION - FRAME LOG ANALYSIS REPORT")
-        print("="*60)
-        print(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Log File: {self.log_file_path}")
+        from debug_logger import DebugLogger
+        debug_logger = DebugLogger("frame_log_analyzer")
+        
+        debug_logger.info("\n" + "="*60, frame_count=0)
+        debug_logger.info("[Report] BASKETBALL SHOT DETECTION - FRAME LOG ANALYSIS REPORT", frame_count=0)
+        debug_logger.info("="*60, frame_count=0)
+        debug_logger.info(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", frame_count=0)
+        debug_logger.info(f"Log File: {self.log_file_path}", frame_count=0)
         
         # Run all analyses
         self.basic_statistics()
@@ -351,13 +337,13 @@ class FrameLogAnalyzer:
         self.detection_comparison()
         self.bbox_size_analysis()
 
-        print("\n" + "="*60)
-        print("✅ ANALYSIS COMPLETE")
-        print("="*60)
+        debug_logger.info("\n" + "="*60, frame_count=0)
+        debug_logger.info("[Complete] ANALYSIS COMPLETE", frame_count=0)
+        debug_logger.info("="*60, frame_count=0)
         
         if output_file:
             # TODO: Save detailed report to file
-            print(f"📄 Detailed report saved to: {output_file}")
+            debug_logger.info(f"[Output] Detailed report saved to: {output_file}", frame_count=0)
 
 def main():
     parser = argparse.ArgumentParser(description='Analyze basketball shot detection frame logs')
@@ -368,7 +354,9 @@ def main():
     args = parser.parse_args()
     
     if not os.path.exists(args.log_file):
-        print(f"❌ Error: File {args.log_file} does not exist")
+        from debug_logger import DebugLogger
+        debug_logger = DebugLogger("frame_log_analyzer")
+        debug_logger.error(f"[Error] File {args.log_file} does not exist", frame_count=0)
         return
     
     # Create analyzer and run analysis

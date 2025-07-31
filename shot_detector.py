@@ -27,21 +27,33 @@ from shot_analyzer import ShotAnalyzer
 class ShotDetector:
     def __init__(self, input_video="video_test_5.mp4", output_video=None, ball_model_path="yolov8m.pt", hoop_model_path=None, person_model_path=None, use_shared_model=True, min_ball_area=400, enable_person_detection=False, model_config=None):
         import os
+        # Set basic attributes first
+        self.input_video = input_video
+        self.ball_model_path = ball_model_path
+        self.hoop_model_path = hoop_model_path if hoop_model_path else ball_model_path
+
         # Load models for optimal detection
         self.use_shared_model = use_shared_model
-
         self.model_config = model_config
         self.enable_person_detection = enable_person_detection
+        
+        # For backward compatibility, set primary model as ball model
+        self.model_path = ball_model_path
+
+        # Initialize two loggers - one for frame data and one for shot data
+        self.frame_logger = ShotLogger(input_file=self.input_video, model_path=self.ball_model_path, log_type="frame")
+        self.shot_logger = ShotLogger(input_file=self.input_video, model_path=self.ball_model_path, log_type="shot")
+        # 关键：让 ShotDetector 直接引用 ShotLogger 的 debug_logger
+        self.debug_logger = DebugLogger(debug_log_file=os.path.join('logs', 'console_output.log'), input_file=self.input_video, model_path=self.ball_model_path, log_type="debug")
+        self.debug_logger.debug_file_only("[ShotDetector] debug_logger now references ShotLogger's initialized logger.", frame_count=0)
 
         # Load main detection model (YOLOv8m for sports ball and person)
-        self.ball_model_path = ball_model_path
         self.ball_model = YOLO(ball_model_path)
-        print(f"🏀 Loaded main model: {ball_model_path}")
+        self.debug_logger.info(f"🏀 Loaded main model: {ball_model_path}", frame_count=0)
         
         # Load hoop detection model (use ball model if not specified)
-        self.hoop_model_path = hoop_model_path if hoop_model_path else ball_model_path
         self.hoop_model = YOLO(self.hoop_model_path)
-        print(f"🏀 Loaded hoop model: {self.hoop_model_path}")
+        self.debug_logger.info(f"🏀 Loaded hoop model: {self.hoop_model_path}", frame_count=0)
         
         # Initialize model classes
         self.ball_model_classes = self.ball_model.names if hasattr(self.ball_model, 'names') else {0: "Basketball"}
@@ -50,16 +62,16 @@ class ShotDetector:
         # Print ball model classes
         ball_classes_list = list(self.ball_model_classes.values())
         if 'sports ball' in [cls.lower() for cls in ball_classes_list]:
-            print(f"📋 Ball model classes: {len(self.ball_model_classes)} classes (including 'sports ball')")
+            self.debug_logger.info(f"📋 Ball model classes: {len(self.ball_model_classes)} classes (including 'sports ball')", frame_count=0)
         else:
-            print(f"📋 Ball model classes: {len(self.ball_model_classes)} classes: {ball_classes_list}")
+            self.debug_logger.info(f"📋 Ball model classes: {len(self.ball_model_classes)} classes: {ball_classes_list}", frame_count=0)
         
         # Print hoop model classes
-        print(f"📋 Hoop model classes: {list(self.hoop_model_classes.values())}")
+        self.debug_logger.info(f"📋 Hoop model classes: {list(self.hoop_model_classes.values())}", frame_count=0)
         
         # Print active hoop detection classes
         active_hoop_classes = object_class_mapper.get_class_names_for_type('hoop')
-        print(f"🎯 Active hoop detection classes: {active_hoop_classes}")
+        self.debug_logger.info(f"🎯 Active hoop detection classes: {active_hoop_classes}", frame_count=0)
 
         # Person detection: only load if enabled
         if enable_person_detection:
@@ -67,29 +79,27 @@ class ShotDetector:
                 self.person_model = self.ball_model  # Share the same model
                 self.person_model_path = ball_model_path
                 self.person_model_classes = self.ball_model.names if hasattr(self.ball_model, 'names') else {0: "person"}
-                print(f"👤 Using shared model for person detection: {ball_model_path}")
+                self.debug_logger.info(f"👤 Using shared model for person detection: {ball_model_path}", frame_count=0)
             else:
                 # Use separate person model if specified
                 self.person_model_path = person_model_path or "yolov8n.pt"
                 self.person_model = YOLO(self.person_model_path)
                 self.person_model_classes = self.person_model.names if hasattr(self.person_model, 'names') else {0: "person"}
-                print(f"👤 Loaded separate person model: {self.person_model_path}")
+                self.debug_logger.info(f"👤 Loaded separate person model: {self.person_model_path}", frame_count=0)
                 
             # 打印人物检测类别
             person_classes = [cls for cls in self.person_model_classes.values() 
                              if 'person' in cls.lower()]
-            print(f"📋 Person model classes: {len(self.person_model_classes)} classes")
-            print(f"👤 Active person detection classes: {person_classes}")
+            self.debug_logger.info(f"📋 Person model classes: {len(self.person_model_classes)} classes", frame_count=0)
+            self.debug_logger.info(f"👤 Active person detection classes: {person_classes}", frame_count=0)
         else:
             self.person_model = None
             self.person_model_path = None
             self.person_model_classes = {0: "person"}  # 默认值，即使未启用也提供
-            print(f"👤 Person detection disabled")
+            self.debug_logger.info(f"👤 Person detection disabled", frame_count=0)
 
         # For backward compatibility, set primary model as ball model
         self.model = self.ball_model
-        self.model_path = ball_model_path
-        self.input_video = input_video
 
         # --- Output video filename logic ---
         if output_video is None:
@@ -105,13 +115,6 @@ class ShotDetector:
         self.output_video = output_video
         self.video_writer = None
 
-        # Initialize two loggers - one for frame data and one for shot data
-        self.frame_logger = ShotLogger(input_file=self.input_video, model_path=self.ball_model_path, log_type="frame")
-        self.shot_logger = ShotLogger(input_file=self.input_video, model_path=self.ball_model_path, log_type="shot")
-        # 关键：让 ShotDetector 直接引用 ShotLogger 的 debug_logger
-        self.debug_logger = DebugLogger(debug_log_file=os.path.join('logs', 'console_output.log'), input_file=self.input_video, model_path=self.ball_model_path, log_type="debug")
-        self.debug_logger.debug_file_only("[ShotDetector] debug_logger now references ShotLogger's initialized logger.")
-
         # 设置最小球面积阈值
         self.min_ball_area = min_ball_area  # 使用传入的参数值
 
@@ -125,8 +128,8 @@ class ShotDetector:
             # Filter and show only person-related classes
             person_classes = [cls for cls in self.person_model_classes.values()
                              if 'person' in cls.lower()]
-            print(f"📋 Person model classes: {len(self.person_model_classes)} classes")
-            print(f"👤 Active person detection classes: {person_classes}")
+            self.debug_logger.info(f"📋 Person model classes: {len(self.person_model_classes)} classes", frame_count=0)
+            self.debug_logger.info(f"👤 Active person detection classes: {person_classes}", frame_count=0)
         else:
             self.person_model_classes = {0: "person"}
         self.device = get_device()
@@ -330,13 +333,14 @@ class ShotDetector:
         Check for successful shot based on net disturbance when ball is not detected
         but was previously moving towards the hoop.
         
+        作为UP/DOWN机制的补充，仅在UP/DOWN机制无法判定时使用。
+        
         Sequence:
         1. Check if no valid ball detected in current frame (no selected ball)
         2. Check if there was an UP state before  
-        3. Check if the hoop is at the edge of the video
-        4. Predict ball position using trajectory fitting (only when no selected ball)
-        5. If predicted position is in hoop, compare hoop region between frames for net disturbance
-        6. If disturbance is detected, count as successful shot
+        3. Predict ball position using trajectory fitting (only when no selected ball)
+        4. If predicted position is in hoop, compare hoop region between frames for net disturbance
+        5. If disturbance is detected, count as successful shot
         
         Returns:
             bool: True if a successful shot is detected based on net disturbance
@@ -368,21 +372,9 @@ class ShotDetector:
             self.debug_logger.debug_file_only("无法获取帧尺寸，跳过篮网扰动检测")
             return False
         
-        # Define edge threshold (15% of frame dimensions from edges)
-        edge_threshold_x = 0.15 * frame_width
-        edge_threshold_y = 0.15 * frame_height
-        
-        # Check if hoop is near the edge of the video
-        is_hoop_at_edge = (hoop_center[0] < edge_threshold_x) or \
-                         (hoop_center[0] > frame_width - edge_threshold_x) or \
-                         (hoop_center[1] < edge_threshold_y) or \
-                         (hoop_center[1] > frame_height - edge_threshold_y)
-                         
-        if not is_hoop_at_edge:
-            self.debug_logger.debug_file_only(f"篮筐不在视频边缘，hoop_center=({hoop_center[0]}, {hoop_center[1]}), frame_size=({frame_width}, {frame_height})")
-            return False
-            
-        self.debug_logger.debug_file_only(f"篮筐在视频边缘，进行篮网扰动检测: hoop_center=({hoop_center[0]}, {hoop_center[1]}), frame_size=({frame_width}, {frame_height})")
+        # 已移除"篮筐在视频边缘"的条件检查
+        # 无论篮筐位置如何，都继续进行篮网扰动检测
+        self.debug_logger.debug_file_only(f"进行篮网扰动检测: hoop_center=({hoop_center[0]}, {hoop_center[1]}), frame_size=({frame_width}, {frame_height})")
 
         # 4. Use selected ball if available, otherwise predict ball position using trajectory fitting
         ball_position = None
@@ -757,6 +749,25 @@ class ShotDetector:
             self.selected_ball = None
             self.selected_hoop = None
             
+            # 首先尝试执行UP/DOWN检测逻辑（如果有足够的历史数据）
+            # 即使当前帧没有同步检测到球和篮筐，也可以基于历史数据进行UP/DOWN状态判断
+            if self.ball_tracker.ball_pos and self.hoop_tracker.hoop_pos:
+                # 使用最近的有效数据进行UP/DOWN检测
+                last_ball = self.ball_tracker.ball_pos[-1]
+                last_hoop = self.hoop_tracker.hoop_pos[-1]
+                
+                # 执行UP/DOWN检测逻辑
+                self.shot_analyzer.detect_up(last_ball, last_hoop)
+                if self.shot_analyzer.up and not self.shot_analyzer.down:
+                    if self.shot_analyzer.detect_down(last_ball, last_hoop):
+                        self.shot_analyzer.down = True
+                        self.shot_analyzer.down_frame = self.frame_count
+                        self.frame_logger.log_down_event(self.frame_count)
+                        self.analyze_shot_attempt()
+                        self.debug_logger.info(f"🏀 基于UP/DOWN机制检测到进球，帧号: {self.frame_count}")
+                        return
+            
+            # 如果UP/DOWN检测未能判定进球，再尝试篮网扰动检测作为补充
             # Check for net disturbance based shot detection
             # This will follow the exact sequence:
             # 1. First check if no valid ball detected in current frame (no selected ball) - already confirmed
@@ -769,9 +780,8 @@ class ShotDetector:
                 # Record the shot based on net disturbance
                 self.shot_analyzer.down = True
                 self.shot_analyzer.down_frame = self.frame_count
-                self.debug_logger.info(f"🏀 基于篮网扰动检测到进球，帧号: {self.frame_count}")
+                self.debug_logger.info(f"🏀 基于篮网扰动检测到进球（作为UP/DOWN机制的补充），帧号: {self.frame_count}")
                 self.analyze_shot_attempt()
-            # Do not perform UP/DOWN detection, do not add to trajectory
             
     def analyze_shot_attempt(self):
         """Analyze shot attempt with safe state handling"""
@@ -859,15 +869,15 @@ class ShotDetector:
                 self.analyze_shot_attempt()
 
     def display_score(self):
-        # Add text
+        # Add text with blue color, smaller font and moved down
         text = str(self.makes) + " / " + str(self.attempts)
-        cv2.putText(self.frame, text, (50, 125), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 255, 255), 6)
-        cv2.putText(self.frame, text, (50, 125), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 0, 0), 3)
+        cv2.putText(self.frame, text, (50, 145), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (255, 255, 255), 5)
+        cv2.putText(self.frame, text, (50, 145), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (255, 0, 0), 2)
 
-        # Display frame number in the top-left corner
+        # Display frame number in the top-left corner with blue color, smaller font and moved down
         frame_text = f"Frame: {self.frame_count}"
-        cv2.putText(self.frame, frame_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 255, 255), 4)
-        cv2.putText(self.frame, frame_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 0, 0), 2)
+        cv2.putText(self.frame, frame_text, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 3)
+        cv2.putText(self.frame, frame_text, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 2)
 
         # Draw UP/DOWN regions for visualization
         self.draw_detection_regions()
@@ -990,7 +1000,7 @@ class ShotDetector:
                             if ball_area >= self.min_ball_area and (conf > 0.4 or (in_hoop_region(center, self.hoop_tracker.hoop_pos) and conf > 0.2)):
                                 # Green box for all confidence detected balls
                                 cvzone.cornerRect(self.frame, (x1, y1, w, h), colorC=(0, 255, 0), t=2)
-                                self.debug_logger.debug_file_only(f"绘制普通球边界框: center={center}, frame={self.frame_count}")
+                                self.debug_logger.debug_file_only(f"绘制普通球边界框: center={center}, frame={self.frame_count}", frame_count=self.frame_count)
                             elif ball_area < self.min_ball_area:
                                 # Draw filtered out balls in gray for debugging
                                 cvzone.cornerRect(self.frame, (x1, y1, w, h), colorC=(128, 128, 128), t=1)
@@ -1123,7 +1133,7 @@ class ShotDetector:
             if self.prev_frame is not None and self.frame is not None:
                 # 检查当前帧是否是预先检测到的场景变化帧（排除第0帧）
                 if self.frame_count in self.scene_change_frames and self.frame_count > 0:
-                    self.debug_logger.warning(f"⚠️ Frame {self.frame_count}: 检测到场景变化，可能是视频剪辑，重置跟踪数据")
+                    self.debug_logger.warning(f"⚠️ Frame {self.frame_count}: 检测到场景变化，可能是视频剪辑，重置跟踪数据", frame_count=self.frame_count)
                     # 记录视频剪辑事件（帧索引从0开始）
                     self.frame_logger.log_video_cut(self.frame_count)
                     self.ball_tracker.reset_tracking()
@@ -1135,7 +1145,7 @@ class ShotDetector:
             self.clean_motion()
             
             # Then process frame detections and perform synchronized UP/DOWN analysis
-            self.debug_logger.debug(f"📍 Processing frame {self.frame_count} with {len(current_frame_balls)} balls, {len(current_frame_hoops)} hoops")
+            self.debug_logger.debug(f"📍 Processing frame {self.frame_count} with {len(current_frame_balls)} balls, {len(current_frame_hoops)} hoops", frame_count=self.frame_count)
             self.process_frame_detections(current_frame_balls, current_frame_hoops)
 
             if self.selected_ball:
@@ -1220,7 +1230,7 @@ class ShotDetector:
                 self.frame_logger._frame_log_file.write(']')  # Close JSON array
                 self.frame_logger._frame_log_file.close()
             except (ValueError, AttributeError) as e:
-                print(f"Warning: Could not close frame log file properly: {e}")
+                self.debug_logger.warning(f"Could not close frame log file properly: {e}", frame_count=self.frame_count)
 
         # 处理可能未完成的UP事件
         self.frame_logger.finalize_incomplete_up()
@@ -1228,16 +1238,15 @@ class ShotDetector:
         # Save both frame and shot logs after processing completes
         frame_log_filename = self.frame_logger.save_log()
         shot_log_filename = self.shot_logger.save_log()
-        print(f"\n✅ 帧日志已保存到: {frame_log_filename}")
-        print(f"\n✅ 投篮日志已保存到: {shot_log_filename}")
+        self.debug_logger.info(f"帧日志已保存到: {frame_log_filename}", frame_count=self.frame_count)
+        self.debug_logger.info(f"投篮日志已保存到: {shot_log_filename}", frame_count=self.frame_count)
 
         # 打印改进的摘要
-        self.shot_logger.print_improved_summary()
+        self.shot_logger.print_improved_summary(self.debug_logger)
 
         # 关闭调试日志器
-        self.debug_logger.info(f"Processing completed. Debug log saved to: {self.debug_logger.debug_log_file}")
+        self.debug_logger.info(f"Processing completed. Debug log saved to: {self.debug_logger.debug_log_file}", frame_count=self.frame_count)
         self.debug_logger.close()
-        print(f"\n📝 调试日志已保存到: {self.debug_logger.debug_log_file}")
 
 if __name__ == "__main__":
     import argparse

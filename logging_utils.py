@@ -26,33 +26,38 @@ class DebugLogger:
             os.makedirs(os.path.dirname(self.debug_log_file), exist_ok=True)
             self._log_file = open(self.debug_log_file, 'w', encoding='utf-8')
 
-    def debug(self, message):
+    def debug(self, message, frame_count=None):
         """记录调试信息"""
-        self._log('DEBUG', message, console_output=False)
+        self._log('DEBUG', message, console_output=False, frame_count=frame_count)
 
-    def debug_file_only(self, message):
+    def debug_file_only(self, message, frame_count=None):
         """仅写入文件的调试信息"""
-        self._log('DEBUG', message, console_output=False)
+        self._log('DEBUG', message, console_output=False, frame_count=frame_count)
 
-    def console(self, message):
+    def console(self, message, frame_count=None):
         """记录控制台和文件都输出的重要信息"""
-        self._log('CONSOLE', message, console_output=True)
+        self._log('CONSOLE', message, console_output=True, frame_count=frame_count)
 
-    def info(self, message):
+    def info(self, message, frame_count=None):
         """记录一般信息"""
-        self._log('INFO', message, console_output=True)
+        self._log('INFO', message, console_output=True, frame_count=frame_count)
 
-    def warning(self, message):
+    def warning(self, message, frame_count=None):
         """记录警告信息"""
-        self._log('WARNING', message, console_output=True)
+        self._log('WARNING', message, console_output=True, frame_count=frame_count)
 
-    def _log(self, level, message, console_output=True):
+    def _log(self, level, message, console_output=True, frame_count=None):
         """内部日志记录方法"""
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        log_entry = f"[{timestamp}] [{level}] {message}\n"
+        
+        # 添加帧序号（如果提供）
+        if frame_count is not None:
+            log_entry = f"[{timestamp}] [Frame:{frame_count}] [{level}] {message}\n"
+        else:
+            log_entry = f"[{timestamp}] [{level}] {message}\n"
         
         if console_output and self._console_enabled:
-            print(log_entry, end='')
+            pass
         
         if self._log_file:
             self._log_file.write(log_entry)
@@ -223,15 +228,14 @@ class ShotLogger:
                 json.dump(log_content, f, indent=2, ensure_ascii=False)
         return self.log_file
 
-    def print_improved_summary(self):
+    def print_improved_summary(self,debug_logger):
         """打印改进的摘要信息"""
         shots = [entry for entry in self._log_data if "shot" in entry]
         makes = sum(1 for shot in shots if shot["shot"]["is_successful"])
         attempts = len(shots)
-        
-        print(f"\n🏀 投篮统计: {makes}/{attempts} ({makes/attempts*100:.1f}%)")
+        debug_logger.info(f"\n[Basketball] 投篮统计: {makes}/{attempts} ({makes/attempts*100:.1f}%)", frame_count=0)
         if attempts > 0:
-            print(f"✅ 命中: {makes}")
-            print(f"❌ 未中: {attempts - makes}")
+            debug_logger.info(f"[Made] 命中: {makes}", frame_count=0)
+            debug_logger.info(f"[Missed] 未中: {attempts - makes}", frame_count=0)
         else:
-            print("⚠️ 没有检测到投篮尝试")
+            debug_logger.warning("[Warning] 没有检测到投篮尝试", frame_count=0)

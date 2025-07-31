@@ -1,6 +1,7 @@
 
 import math
 import numpy as np
+import warnings
 import torch
 
 def get_device():
@@ -123,7 +124,20 @@ def score(ball_pos, hoop_pos, debug_info=None):
         return False
 
     # Create line from two points
-    m, b = np.polyfit(x, y, 1)
+    try:
+        # Suppress polyfit warnings as we're intentionally fitting with minimal points
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", np.RankWarning)
+            m, b = np.polyfit(x, y, 1)
+    except Exception:
+        debug_info['failure_reason'] = "Failed to fit trajectory line"
+        return False
+    
+    # Check if the slope is reasonable (avoid division by zero or near-zero)
+    if abs(m) < 1e-10:
+        debug_info['failure_reason'] = "Trajectory line too flat to determine shot result"
+        return False
+    
     predicted_x = ((hoop_pos[-1][0][1] - 0.5 * hoop_pos[-1][3]) - b) / m
     # Use smaller rim area for stricter judgment (0.3 instead of 0.4)
     rim_x1 = hoop_pos[-1][0][0] - 0.3 * hoop_pos[-1][2]
