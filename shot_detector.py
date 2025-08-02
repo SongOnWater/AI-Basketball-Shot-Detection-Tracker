@@ -255,19 +255,22 @@ class ShotLogger:
         return debug_log_path
 
 class ShotDetector:
-    def __init__(self, input_video="video_test_5.mp4", output_video=None):
+    def __init__(self, input_video="video_test_5.mp4", output_video=None, model_path="best.pt"):
         # Load the YOLO model created from main.py - change text to your relative path
         self.overlay_text = "Waiting..."
-        self.model = YOLO("best.pt")
+        self.model = YOLO(model_path)
+        self.model_path = model_path
         self.output_video = output_video
         self.video_writer = None
         self.input_video = input_video
         self.logger = ShotLogger(input_video=input_video, ball_threshold=0.5)
         
+        # Set up class names based on the model
+        self.setup_class_names()
+        
         # Uncomment this line to accelerate inference. Note that this may cause errors in some setups.
         #self.model.half()
         
-        self.class_names = ['Basketball', 'Basketball Hoop']
         self.device = get_device()
         # Uncomment line below to use webcam (I streamed to my iPhone using Iriun Webcam)
         # self.cap = cv2.VideoCapture(0)
@@ -297,6 +300,34 @@ class ShotDetector:
         self.overlay_color = (0, 0, 0)
 
         self.run()
+        
+    def setup_class_names(self):
+        """
+        Set up class names based on the model being used
+        """
+        # Get model class names
+        model_names = self.model.names
+        
+        # Map model-specific class names to our internal names
+        self.ball_classes = []  # Classes that represent basketballs
+        self.hoop_classes = []  # Classes that represent hoops/rim
+        
+        # Common terms for basketballs and hoops
+        basketball_terms = ['basketball', 'ball', 'sports ball']
+        hoop_terms = ['rim', 'hoop', 'basketball hoop']
+        
+        # Check each class in the model
+        for class_id, class_name in model_names.items():
+            # Check if this class is a basketball-related class
+            if any(term in class_name.lower() for term in basketball_terms):
+                self.ball_classes.append(class_name)
+            # Check if this class is a hoop-related class
+            elif any(term in class_name.lower() for term in hoop_terms):
+                self.hoop_classes.append(class_name)
+            
+        print(f"Model: {self.model_path}")
+        print(f"Ball classes: {self.ball_classes}")
+        print(f"Hoop classes: {self.hoop_classes}")
 
     def run(self):
         # Initialize video writer if output path is provided
@@ -339,12 +370,12 @@ class ShotDetector:
 
                     # Class Name
                     cls = int(box.cls[0])
-                    current_class = self.class_names[cls]
+                    current_class = self.model.names[cls]
 
                     center = (int(x1 + w / 2), int(y1 + h / 2))
 
                     # Collect all detections for current frame logging
-                    if current_class == "Basketball":
+                    if current_class in self.ball_classes:
                         current_frame_balls.append({
                             "bbox": [x1, y1, x2, y2],
                             "center": center,
@@ -358,7 +389,7 @@ class ShotDetector:
                             self.ball_pos.append((center, self.frame_count, w, h, conf))
                             cvzone.cornerRect(self.frame, (x1, y1, w, h))
 
-                    elif current_class == "Basketball Hoop":
+                    elif current_class in self.hoop_classes:
                         current_frame_hoops.append({
                             "bbox": [x1, y1, x2, y2],
                             "center": center,
@@ -542,6 +573,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Basketball Shot Detector')
     parser.add_argument('--input', type=str, default='video_test_5.mp4', help='Input video file path')
     parser.add_argument('--output', type=str, help='Output video file path')
+    parser.add_argument('--model', type=str, default='best.pt', help='Model file path')
     args = parser.parse_args()
     
-    ShotDetector(input_video=args.input, output_video=args.output)
+    ShotDetector(input_video=args.input, output_video=args.output, model_path=args.model)
