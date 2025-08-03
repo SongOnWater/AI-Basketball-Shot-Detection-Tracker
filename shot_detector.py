@@ -10,6 +10,7 @@ import time
 from tqdm import tqdm
 from utils import score, detect_down, detect_up, in_hoop_region, clean_hoop_pos, clean_ball_pos, get_device
 from datetime import datetime
+import os
 
 class ShotLogger:
     def __init__(self, input_video="video_test_5.mp4", ball_threshold=0.5):
@@ -22,6 +23,14 @@ class ShotLogger:
         self.progress = 0
         self.input_video = input_video
         self.ball_threshold = ball_threshold
+        self._first_frame_logged = False  # Add missing attribute
+        self.output_dir = None  # Store output directory
+        self.model_name = None  # Store model name for consistent naming
+        
+    def set_output_info(self, output_dir, model_name):
+        """Set output directory and model name for consistent log naming"""
+        self.output_dir = output_dir
+        self.model_name = model_name
         
     def log_shot(self, frame_idx, timestamp, ball_pos, hoop_pos, ball_confidence, is_successful, debug_info=None):
         """
@@ -63,11 +72,20 @@ class ShotLogger:
     def save_log(self, filename=None):
         if filename is None:
             # Extract filename from input video path (without extension)
-            video_name = self.input_video.split('/')[-1]
-            video_name = video_name.split('.')[0]
-            # Generate log filename with video name and start time
-            timestamp = self.start_datetime.strftime('%Y%m%d_%H%M%S')
-            filename = f"{video_name}_shot_log_{timestamp}.json"
+            video_name = os.path.splitext(os.path.basename(self.input_video))[0]
+            
+            # Generate log filename with video name, model name and start time
+            timestamp = self.start_datetime.strftime('%Y-%m-%d_%H-%M-%S')
+            
+            # Use consistent naming format with model name
+            if self.output_dir and self.model_name:
+                filename = os.path.join(self.output_dir, f"{video_name}_{self.model_name}_shot_{timestamp}.json")
+            else:
+                filename = f"{video_name}_shot_{timestamp}.json"
+        
+        # Create output directory if needed
+        if self.output_dir:
+            os.makedirs(self.output_dir, exist_ok=True)
         
         # Create a clean copy of shots without debug info
         clean_shots = []
@@ -111,10 +129,16 @@ class ShotLogger:
         # Skip logging if no debug file is being created
         if not hasattr(self, '_debug_file'):
             # Create debug log filename based on input video
-            video_name = self.input_video.split('/')[-1].split('.')[0]
-            timestamp = self.start_datetime.strftime('%Y%m%d_%H%M%S')
-            debug_filename = f"{video_name}_frame_log_{timestamp}.json"
-            self._debug_file = open(debug_filename, 'w')
+            video_name = os.path.splitext(os.path.basename(self.input_video))[0]
+            timestamp = self.start_datetime.strftime('%Y-%m-%d_%H-%M-%S')
+            
+            # Use consistent naming with model name if available
+            if self.output_dir and self.model_name:
+                frame_filename = os.path.join(self.output_dir, f"{video_name}_{self.model_name}_frame_{timestamp}.json")
+            else:
+                frame_filename = f"{video_name}_frame_{timestamp}.json"
+                
+            self._debug_file = open(frame_filename, 'w')
             self._debug_file.write('[')  # Start JSON array
             self._first_frame_logged = False  # Track if first frame has been logged
         
@@ -163,41 +187,42 @@ class ShotLogger:
             self._debug_file.write(',\n')
         json.dump(frame_data, self._debug_file, indent=2)
         self._first_frame_logged = True
-        
+
     def save_debug_log(self, shot_log_path):
         """
-        Generate detailed debug log file
-        
-        Args:
-            shot_log_path: Path to the original shot log
+        Save detailed debug log with comprehensive shot information
         """
-        # Create debug log filename
-        debug_log_path = shot_log_path.replace('_shot_log_', '_debug_log_')
+        # Generate debug log filename based on shot log path
+        base_name = os.path.splitext(shot_log_path)[0]
         
-        # Extract detailed debug information for each shot
-        debug_shots = []
-        for i, shot in enumerate(self.shots):
-            shot_num = i + 1
+        # Extract the video name and model name part (before "_shot_")
+        if "_shot_" in base_name:
+            # Split on "_shot_" and take the first part
+            parts = base_name.split("_shot_")
+            debug_log_path = f"{parts[0]}.json"
+        else:
+            # Fallback: just remove "_shot" if present
+            debug_log_path = base_name.replace("_shot", "") + ".json"
+        
+        # Read the existing shot log
+        try:
+            with open(shot_log_path, 'r') as f:
+                shot_log_data = json.load(f)
+        except Exception as e:
+            print(f"Error reading shot log: {e}")
+            return shot_log_path
             
-            # Start with basic shot information
-            shot_info = {
-                "shot_number": shot_num,
+        # Add detailed shot information to the shot log
+        detailed_shots = []
+        for shot in self.shots:
+            detailed_shot = {
                 "frame_index": shot["frame_index"],
                 "timestamp": shot["timestamp"],
                 "is_successful": shot["is_successful"]
             }
             
-            # Add ball position and confidence if available
-            if "_ball_position" in shot:
-                shot_info["ball_position"] = shot["_ball_position"]
-            if "_ball_confidence" in shot:
-                shot_info["ball_confidence"] = shot["_ball_confidence"]
-            if "_hoop_position" in shot:
-                shot_info["hoop_position"] = shot["_hoop_position"]
-            
-            # Add all debug information
+            # Add detailed debug information if available
             if "_debug_info" in shot:
-                # Convert any non-English strings in debug_info
                 debug_info = shot["_debug_info"]
             
                 # Replace success/failure reason with English versions
@@ -221,52 +246,63 @@ class ShotLogger:
             
                 # Add ball and hoop tracking data if available
                 if "ball_tracking" in debug_info:
-                    shot_info["ball_tracking"] = debug_info["ball_tracking"]
+                    detailed_shot["ball_tracking"] = debug_info["ball_tracking"]
             
                 if "hoop_tracking" in debug_info:
-                    shot_info["hoop_tracking"] = debug_info["hoop_tracking"]
+                    detailed_shot["hoop_tracking"] = debug_info["hoop_tracking"]
             
                 # Add other debug info
-                shot_info["debug_info"] = {k: v for k, v in debug_info.items() 
-                                          if k not in ["ball_tracking", "hoop_tracking"]}
+                detailed_shot["debug_info"] = {k: v for k, v in debug_info.items() 
+                                              if k not in ["ball_tracking", "hoop_tracking"]}
                 
                 # Add concise result reason
                 if shot["is_successful"] and "success_reason" in debug_info:
-                    shot_info["result_reason"] = debug_info["success_reason"]
+                    detailed_shot["result_reason"] = debug_info["success_reason"]
                 elif not shot["is_successful"] and "failure_reason" in debug_info:
-                    shot_info["result_reason"] = debug_info["failure_reason"]
+                    detailed_shot["result_reason"] = debug_info["failure_reason"]
             
-            debug_shots.append(shot_info)
+            detailed_shots.append(detailed_shot)
         
-        # Create debug log data
-        debug_data = {
-            "video": self.input_video,
-            "total_shots": self.total_attempts,
-            "successful_shots": self.success_count,
-            "shooting_accuracy": float(self.success_count / self.total_attempts * 100) if self.total_attempts > 0 else 0.0,
-            "detailed_shots": debug_shots
-        }
+        # Add detailed shots to the main log
+        shot_log_data["detailed_shots"] = detailed_shots
         
-        # Save debug log
-        with open(debug_log_path, 'w') as f:
-            json.dump(debug_data, f, indent=2)
+        # Save updated shot log with detailed information
+        with open(shot_log_path, 'w') as f:
+            json.dump(shot_log_data, f, indent=2)
         
-        print(f"Detailed debug log saved to {debug_log_path}")
-        return debug_log_path
+        print(f"Shot log with details saved to {shot_log_path}")
+        return shot_log_path
 
 class ShotDetector:
-    def __init__(self, input_video="video_test_5.mp4", output_video=None, model_path="best.pt"):
+    def __init__(self, input_video="video_test_5.mp4", output_video=None, model_path="best.pt", 
+                 ball_model_path=None, hoop_model_path=None, person_model_path=None, use_shared_model=True, 
+                 min_ball_area=400, enable_person_detection=False, model_config=None, debug_log_path=None, 
+                 output_dir=None):
+        # For compatibility with batch_test_evaluator.py
+        # Use ball_model_path if provided, otherwise fall back to model_path
+        actual_model_path = ball_model_path if ball_model_path else model_path
+        
         # Load the YOLO model created from main.py - change text to your relative path
         self.overlay_text = "Waiting..."
-        self.model = YOLO(model_path)
-        self.model_path = model_path
+        self.model = YOLO(actual_model_path)
+        self.model_path = actual_model_path
         self.output_video = output_video
         self.video_writer = None
         self.input_video = input_video
-        self.logger = ShotLogger(input_video=input_video, ball_threshold=0.5)
+        self.output_dir = output_dir  # Store output directory
+        
+        # Set up debug log path
+        self.debug_log_path = debug_log_path or os.path.join('logs', 'console_output.log')
+        os.makedirs(os.path.dirname(self.debug_log_path), exist_ok=True)
         
         # Set up class names based on the model
         self.setup_class_names()
+        
+        # Create logger after setting up debug_log_path
+        self.logger = ShotLogger(input_video=self.input_video)
+        # Set output directory and model name for consistent log naming
+        model_name = os.path.splitext(os.path.basename(self.model_path))[0] if self.model_path else "default"
+        self.logger.set_output_info(self.output_dir, model_name)
         
         # Uncomment this line to accelerate inference. Note that this may cause errors in some setups.
         #self.model.half()
@@ -299,109 +335,125 @@ class ShotDetector:
         self.fade_counter = 0
         self.overlay_color = (0, 0, 0)
 
-        self.run()
+        # Setup video writer if output path is provided
+        if output_video:
+            # Get video properties
+            fps = self.cap.get(cv2.CAP_PROP_FPS)
+            width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            
+            # Create video writer
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            self.video_writer = cv2.VideoWriter(output_video, fourcc, fps, (width, height))
         
     def setup_class_names(self):
         """
         Set up class names based on the model being used
         """
-        # Get model class names
-        model_names = self.model.names
+        # Get class names from the model
+        if hasattr(self.model, 'names'):
+            self.class_names = self.model.names
+        else:
+            # Default class names if not available from model
+            self.class_names = {0: 'ball', 1: 'hoop'}
         
-        # Map model-specific class names to our internal names
-        self.ball_classes = []  # Classes that represent basketballs
-        self.hoop_classes = []  # Classes that represent hoops/rim
-        
-        # Common terms for basketballs and hoops
-        basketball_terms = ['basketball', 'ball', 'sports ball']
-        hoop_terms = ['rim', 'hoop', 'basketball hoop']
-        
-        # Check each class in the model
-        for class_id, class_name in model_names.items():
-            # Check if this class is a basketball-related class
-            if any(term in class_name.lower() for term in basketball_terms):
-                self.ball_classes.append(class_name)
-            # Check if this class is a hoop-related class
-            elif any(term in class_name.lower() for term in hoop_terms):
-                self.hoop_classes.append(class_name)
-            
         print(f"Model: {self.model_path}")
-        print(f"Ball classes: {self.ball_classes}")
-        print(f"Hoop classes: {self.hoop_classes}")
-
+        print(f"Class names: {self.class_names}")
+            
     def run(self):
-        # Initialize video writer if output path is provided
-        if self.output_video:
-            ret, frame = self.cap.read()
-            if ret:
-                height, width = frame.shape[:2]
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                self.video_writer = cv2.VideoWriter(self.output_video, fourcc, 30.0, (width, height))
-                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Rewind to first frame
+        # Progress bar
+        progress_bar = tqdm(total=self.total_frames, desc="Processing Video", unit="frame")
+        
+        # Create output directory if not exists
+        if self.logger.output_dir:
+            os.makedirs(self.logger.output_dir, exist_ok=True)
+            
+        # Create frame log file with consistent naming and .json extension
+        video_name = os.path.splitext(os.path.basename(self.input_video))[0]
+        timestamp = self.logger.start_datetime.strftime('%Y-%m-%d_%H-%M-%S')
+        
+        # Generate consistent naming for frame log with model name and .json extension
+        if self.logger.model_name:
+            frame_log_filename = f"{video_name}_{self.logger.model_name}_frame_{timestamp}.json"
+        else:
+            frame_log_filename = f"{video_name}_frame_log_{timestamp}.json"
+            
+        frame_log_path = os.path.join(self.logger.output_dir or '.', frame_log_filename)
+        self.logger._debug_file = open(frame_log_path, 'w')
+        self.logger._debug_file.write('[\n')  # Start JSON array
 
-        # Initialize progress bar
-        progress_bar = tqdm(total=self.total_frames, desc="Processing Video", unit='frames')
-
-        while True:
-            ret, self.frame = self.cap.read()
-
-            if not ret:
-                # End of the video or an error occurred
-                if self.video_writer:
-                    self.video_writer.release()
+        while self.cap.isOpened():
+            success, self.frame = self.cap.read()
+            if not success:
                 break
 
-            results = self.model(self.frame, stream=True, device=self.device, verbose=False)
+            # Run model on the frame to detect objects
+            results = self.model(self.frame, stream=True, verbose=False)
 
-            # Collect all detections in current frame for logging
             current_frame_balls = []
             current_frame_hoops = []
 
+            # Process detection results
             for r in results:
                 boxes = r.boxes
                 for box in boxes:
-                    # Bounding box
+                    # Bounding box coordinates
                     x1, y1, x2, y2 = box.xyxy[0]
                     x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
                     w, h = x2 - x1, y2 - y1
 
-                    # Confidence
+                    # Confidence and class
                     conf = math.ceil((box.conf[0] * 100)) / 100
-
-                    # Class Name
                     cls = int(box.cls[0])
-                    current_class = self.model.names[cls]
+                    class_name = self.class_names[cls] if cls in self.class_names else 'unknown'
 
                     center = (int(x1 + w / 2), int(y1 + h / 2))
 
-                    # Collect all detections for current frame logging
-                    if current_class in self.ball_classes:
-                        current_frame_balls.append({
-                            "bbox": [x1, y1, x2, y2],
-                            "center": center,
-                            "size": {"width": w, "height": h},
-                            "confidence": float(conf),
-                            "class": current_class
-                        })
+                    # Create detection data
+                    detection_data = {
+                        'bbox': [x1, y1, x2, y2],
+                        'center': center,
+                        'size': {'width': w, 'height': h},
+                        'confidence': conf,
+                        'class': class_name
+                    }
 
-                        # Only create ball points if reasonable confidence or near hoop
-                        if (conf > 0.3 or (in_hoop_region(center, self.hoop_pos) and conf > 0.15)):
-                            self.ball_pos.append((center, self.frame_count, w, h, conf))
-                            cvzone.cornerRect(self.frame, (x1, y1, w, h))
+                    # Classify detected object
+                    if class_name.lower() in ['ball', 'sports ball']:
+                        # Ball detection
+                        current_frame_balls.append(detection_data)
+                    elif class_name.lower() in ['hoop', 'basketball hoop', 'rim']:
+                        # Hoop detection
+                        current_frame_hoops.append(detection_data)
 
-                    elif current_class in self.hoop_classes:
-                        current_frame_hoops.append({
-                            "bbox": [x1, y1, x2, y2],
-                            "center": center,
-                            "size": {"width": w, "height": h},
-                            "confidence": float(conf),
-                            "class": current_class
-                        })
+                    # Draw bounding boxes
+                    if conf > 0.5:  # Only draw high confidence detections
+                        if class_name.lower() in ['ball', 'sports ball']:
+                            cvzone.cornerRect(self.frame, (x1, y1, w, h), colorR=(0, 0, 255), colorC=(0, 0, 255))  # Red for ball
+                            cv2.putText(self.frame, f'Ball {conf}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                        elif class_name.lower() in ['hoop', 'basketball hoop', 'rim']:
+                            cvzone.cornerRect(self.frame, (x1, y1, w, h), colorR=(255, 0, 0), colorC=(255, 0, 0))  # Blue for hoop
+                            cv2.putText(self.frame, f'Hoop {conf}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
 
-                        # Create hoop points if high confidence
-                        if conf > 0.5:
-                            self.hoop_pos.append((center, self.frame_count, w, h, conf))
-                            cvzone.cornerRect(self.frame, (x1, y1, w, h))
+            # Add ball and hoop positions to tracking arrays
+            for ball in current_frame_balls:
+                # Create ball points if high confidence
+                if ball['confidence'] > 0.5:
+                    center = ball['center']
+                    w = ball['size']['width']
+                    h = ball['size']['height']
+                    conf = ball['confidence']
+                    self.ball_pos.append((center, self.frame_count, w, h, conf))
+
+            for hoop in current_frame_hoops:
+                # Create hoop points if high confidence
+                if hoop['confidence'] > 0.5:
+                    center = hoop['center']
+                    w = hoop['size']['width']
+                    h = hoop['size']['height']
+                    conf = hoop['confidence']
+                    self.hoop_pos.append((center, self.frame_count, w, h, conf))
+                    cvzone.cornerRect(self.frame, (hoop['bbox'][0], hoop['bbox'][1], w, h))
 
             self.clean_motion()
             self.shot_detection()
@@ -447,12 +499,14 @@ class ShotDetector:
         
         # Close frame log file if it exists
         if hasattr(self.logger, '_debug_file'):
-            self.logger._debug_file.write(']')  # Close JSON array
+            self.logger._debug_file.write('\n]')  # Close JSON array
             self.logger._debug_file.close()
         
         # Save shot log after processing completes
         log_filename = self.logger.save_log()
         print(f"\nShot log saved to: {log_filename}")
+        
+        return log_filename  # Return log filename for batch evaluator
 
     def clean_motion(self):
         # Clean and display ball motion
@@ -574,6 +628,8 @@ if __name__ == "__main__":
     parser.add_argument('--input', type=str, default='video_test_5.mp4', help='Input video file path')
     parser.add_argument('--output', type=str, help='Output video file path')
     parser.add_argument('--model', type=str, default='best.pt', help='Model file path')
+    parser.add_argument('--output-dir', type=str, default='output_logs', help='Directory to save logs')
     args = parser.parse_args()
     
-    ShotDetector(input_video=args.input, output_video=args.output, model_path=args.model)
+    detector = ShotDetector(input_video=args.input, output_video=args.output, model_path=args.model, output_dir=args.output_dir)
+    detector.run()

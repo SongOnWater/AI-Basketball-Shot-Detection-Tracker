@@ -6,6 +6,8 @@ from collections import defaultdict
 from shot_detector import ShotDetector
 import tempfile
 import shutil
+import glob
+from datetime import datetime
 
 def load_ground_truth(txt_file):
     """
@@ -132,6 +134,88 @@ def evaluate_shots(ground_truth, detected_shots, frame_tolerance=30):
         }
     }
 
+def find_shot_log(video_name):
+    """Find the shot log file for a given video name"""
+    # Look for files in the current directory
+    import glob
+    import os
+    
+    # Pattern to match shot log files with timestamps
+    patterns = [
+        f"{video_name}*_shot_????-??-??_??-??-??.json",  # With model name
+        f"{video_name}_shot_????-??-??_??-??-??.json",   # Without model name
+        f"{video_name}*_shot_log_????????_??????.json",  # Old format with model name
+        f"{video_name}_shot_log_????????_??????.json"    # Old format without model name
+    ]
+    
+    # Look in current directory first
+    for pattern in patterns:
+        matches = glob.glob(pattern)
+        if matches:
+            # Return the most recent file (sort by modification time)
+            return max(matches, key=os.path.getmtime)
+    
+    # Look in logs directory
+    if os.path.exists('logs'):
+        for pattern in patterns:
+            matches = glob.glob(os.path.join('logs', pattern))
+            if matches:
+                # Return the most recent file (sort by modification time)
+                return max(matches, key=os.path.getmtime)
+    
+    return None
+
+def move_log_files(shot_log_file, output_dir):
+    """Move log files to output directory"""
+    if not output_dir:
+        return
+        
+    # Create output directory if needed
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Move shot log
+    final_shot_log = os.path.join(output_dir, os.path.basename(shot_log_file))
+    if shot_log_file != final_shot_log:
+        shutil.move(shot_log_file, final_shot_log)
+        shot_log_file = final_shot_log
+    
+    # Move frame log if it exists
+    base_name = os.path.splitext(os.path.basename(shot_log_file))[0]
+    
+    # Try to find frame log with new naming convention
+    frame_log_candidates = [
+        f"{base_name.replace('_shot_', '_frame_')}.json",
+        f"{base_name.replace('_shot_', '_frame_')}.txt",  # For backward compatibility
+        f"{base_name}_frame.json",
+        f"{base_name}_frame.txt"  # For backward compatibility
+    ]
+    
+    # Also try old naming conventions
+    if "_shot_" in base_name:
+        prefix = base_name.split("_shot_")[0]
+        frame_log_candidates.extend([
+            f"{prefix}_frame*.json",
+            f"{prefix}_frame*.txt"
+        ])
+    
+    frame_log_file = None
+    for candidate in frame_log_candidates:
+        # Handle glob patterns
+        if "*" in candidate:
+            matches = glob.glob(candidate)
+            if matches:
+                frame_log_file = matches[0]  # Take the first match
+                break
+        else:
+            if os.path.exists(candidate):
+                frame_log_file = candidate
+                break
+    
+    if frame_log_file:
+        final_frame_log = os.path.join(output_dir, os.path.basename(frame_log_file))
+        if frame_log_file != final_frame_log:
+            shutil.move(frame_log_file, final_frame_log)
+
 def process_video(video_path, txt_path, output_dir=None, model_path=None):
     """
     Process a single video and evaluate results
@@ -162,44 +246,46 @@ def process_video(video_path, txt_path, output_dir=None, model_path=None):
             video_name = os.path.splitext(os.path.basename(video_path))[0]
             output_video_path = os.path.join(output_dir, f"{video_name}_output.mp4")
         
+        # Determine debug log path
+        debug_log_path = None
+        if output_dir:
+            model_name = os.path.splitext(os.path.basename(model_path))[0] if model_path else "default"
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            debug_log_path = os.path.join(output_dir, f"{video_name}_{model_name}_debug_{timestamp}.txt")
+        
         # Process video with shot detector
-        detector = ShotDetector(input_video=video_path, output_video=output_video_path, model_path=model_path)
+        detector = ShotDetector(
+            input_video=video_path, 
+            output_video=output_video_path, 
+            ball_model_path=model_path,  # This is compatible with our modified ShotDetector
+            output_dir=output_dir,  # Pass output directory to ShotDetector
+            debug_log_path=debug_log_path  # 传递调试日志路径
+        )
         
-        # Load the generated shot log
-        # Find the shot log file (it should be in current directory with video name pattern)
+        # Actually run the detector to process the video
+        print("Running shot detection...")
+        shot_log_file = detector.run()  # Get the shot log file path directly from the detector
+        print("Shot detection completed.")
+        
+        # Find the shot log file (it should be in logs directory)
         video_name = os.path.splitext(os.path.basename(video_path))[0]
+        model_name = os.path.splitext(os.path.basename(model_path))[0] if model_path else "default"
         
-        # Look for log files in current directory first
-        shot_log_files = [f for f in os.listdir('.') if f.startswith(video_name) and '_shot_log_' in f and f.endswith('.json')]
-        
-        # If not found, check in output directory
-        if not shot_log_files and output_dir:
-            shot_log_files = [f for f in os.listdir(output_dir) 
-                            if f.startswith(video_name) and '_shot_log_' in f and f.endswith('.json')]
-            # Prepend directory path to file names
-            shot_log_files = [os.path.join(output_dir, f) for f in shot_log_files]
-        
-        # If still not found, check in the video directory
-        if not shot_log_files:
-            video_dir = os.path.dirname(video_path)
-            if video_dir and video_dir != '.':
-                shot_log_files = [f for f in os.listdir(video_dir) 
-                                if f.startswith(video_name) and '_shot_log_' in f and f.endswith('.json')]
-                # Prepend directory path to file names
-                shot_log_files = [os.path.join(video_dir, f) for f in shot_log_files]
-        
-        if not shot_log_files:
+        # Use the returned shot log file path directly
+        if not shot_log_file or not os.path.exists(shot_log_file):
             print(f"No shot log file found for {video_name}")
             return None
             
-        # Use the most recent shot log file (sort by modification time)
-        shot_log_file = max(shot_log_files, key=os.path.getmtime)
         print(f"Loading shot log: {shot_log_file}")
         
         with open(shot_log_file, 'r') as f:
             shot_log_data = json.load(f)
         
         detected_shots = shot_log_data.get('shots', [])
+        # Extract shot data from entries if needed
+        if detected_shots and 'shot' in detected_shots[0]:
+            detected_shots = [entry['shot'] for entry in detected_shots]
+            
         print(f"Detected {len(detected_shots)} shots")
         
         # Evaluate
@@ -207,79 +293,22 @@ def process_video(video_path, txt_path, output_dir=None, model_path=None):
         evaluation['video_name'] = video_name
         
         # Move log files to output directory if specified
-        if output_dir:
-            # Move shot log
-            final_shot_log = os.path.join(output_dir, os.path.basename(shot_log_file))
-            if shot_log_file != final_shot_log:
-                shutil.move(shot_log_file, final_shot_log)
-                shot_log_file = final_shot_log
-            
-            # Move debug log if it exists
-            debug_log_file = shot_log_file.replace('_shot_log_', '_debug_log_')
-            # Check if debug log exists in the same directory as shot log
-            if not os.path.exists(debug_log_file):
-                # Try to find debug log in current directory
-                base_name = os.path.basename(shot_log_file)
-                debug_name = base_name.replace('_shot_log_', '_debug_log_')
-                debug_log_file = os.path.join(os.path.dirname(shot_log_file), debug_name)
-                if not os.path.exists(debug_log_file):
-                    debug_log_file = os.path.join('.', debug_name)
-            
-            final_debug_log = os.path.join(output_dir, os.path.basename(debug_log_file))
-            if os.path.exists(debug_log_file):
-                if debug_log_file != final_debug_log:
-                    shutil.move(debug_log_file, final_debug_log)
-            
-            # Move frame log if it exists
-            frame_log_file = shot_log_file.replace('_shot_log_', '_frame_log_')
-            # Check if frame log exists in the same directory as shot log
-            if not os.path.exists(frame_log_file):
-                # Try to find frame log in current directory
-                base_name = os.path.basename(shot_log_file)
-                frame_name = base_name.replace('_shot_log_', '_frame_log_')
-                frame_log_file = os.path.join(os.path.dirname(shot_log_file), frame_name)
-                if not os.path.exists(frame_log_file):
-                    frame_log_file = os.path.join('.', frame_name)
-            
-            final_frame_log = os.path.join(output_dir, os.path.basename(frame_log_file))
-            if os.path.exists(frame_log_file):
-                if frame_log_file != final_frame_log:
-                    shutil.move(frame_log_file, final_frame_log)
+        move_log_files(shot_log_file, output_dir)
         
-        # Clean up the log files if no output directory specified (original behavior)
-        else:
-            os.remove(shot_log_file)
-            debug_log_file = shot_log_file.replace('_shot_log_', '_debug_log_')
-            # Check if debug log exists in the same directory as shot log
-            if not os.path.exists(debug_log_file):
-                # Try to find debug log in current directory
-                base_name = os.path.basename(shot_log_file)
-                debug_name = base_name.replace('_shot_log_', '_debug_log_')
-                debug_log_file = os.path.join(os.path.dirname(shot_log_file), debug_name)
-                if not os.path.exists(debug_log_file):
-                    debug_log_file = os.path.join('.', debug_name)
-            
-            if os.path.exists(debug_log_file):
-                os.remove(debug_log_file)
-                
-            frame_log_file = shot_log_file.replace('_shot_log_', '_frame_log_')
-            # Check if frame log exists in the same directory as shot log
-            if not os.path.exists(frame_log_file):
-                # Try to find frame log in current directory
-                base_name = os.path.basename(shot_log_file)
-                frame_name = base_name.replace('_shot_log_', '_frame_log_')
-                frame_log_file = os.path.join(os.path.dirname(shot_log_file), frame_name)
-                if not os.path.exists(frame_log_file):
-                    frame_log_file = os.path.join('.', frame_name)
-            
-            if os.path.exists(frame_log_file):
-                os.remove(frame_log_file)
-            
+        evaluation['shot_log_file'] = shot_log_file if os.path.exists(shot_log_file) else None
         return evaluation
         
+    except Exception as e:
+        print(f"Error processing video {video_path}: {e}")
+        traceback.print_exc()
+        return None
+    
     finally:
         # Clean up temporary directory
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        try:
+            shutil.rmtree(temp_dir)
+        except:
+            pass
 
 def generate_report(results):
     """
@@ -359,7 +388,7 @@ def generate_report(results):
             if len(details['false_negatives']) > 5:
                 print(f"    ... and {len(details['false_negatives']) - 5} more")
 
-def main(folder_path, frame_tolerance=30, output_dir=None, model_path=None):
+def main(folder_path, frame_tolerance=30, output_dir=None, model_path=None, input_indices=None):
     """
     Main function to process all video-txt pairs in a folder
     
@@ -368,6 +397,8 @@ def main(folder_path, frame_tolerance=30, output_dir=None, model_path=None):
         frame_tolerance: Frame tolerance for matching detected shots to ground truth
         output_dir: Directory to store output files (logs, videos)
         model_path: Path to the model file to use for detection
+        input_indices: List of indices to process. If None, process all files.
+                      If [-1], process all files. Otherwise, process only specified indices.
     """
     print(f"Starting batch evaluation on folder: {folder_path}")
     print(f"Frame tolerance: {frame_tolerance} frames")
@@ -389,11 +420,52 @@ def main(folder_path, frame_tolerance=30, output_dir=None, model_path=None):
         print(f"No video files found in {folder_path}")
         return
     
-    print(f"Found {len(video_files)} video files")
+    # Sort video files for consistent indexing
+    video_files.sort()
+    
+    # Handle input indices
+    if input_indices is None:
+        # List all videos with indices and prompt user to select
+        print("\nAvailable videos:")
+        for i, video_file in enumerate(video_files):
+            print(f"  [{i}]: {video_file}")
+        
+        print("\nEnter indices to process (comma-separated), or -1 for all videos:")
+        try:
+            user_input = input().strip()
+            if user_input == "-1":
+                selected_indices = [-1]
+            else:
+                selected_indices = [int(x.strip()) for x in user_input.split(",") if x.strip()]
+        except ValueError:
+            print("Invalid input. Please enter comma-separated integers or -1.")
+            return
+    else:
+        selected_indices = input_indices
+    
+    # Filter video files based on selected indices
+    if selected_indices == [-1] or selected_indices is None:
+        # Process all videos
+        selected_video_files = video_files
+        print(f"Processing all {len(selected_video_files)} videos")
+    else:
+        # Process only selected indices
+        selected_video_files = []
+        for idx in selected_indices:
+            if 0 <= idx < len(video_files):
+                selected_video_files.append(video_files[idx])
+            else:
+                print(f"Warning: Index {idx} is out of range (0-{len(video_files)-1}). Skipping.")
+        
+        print(f"Processing {len(selected_video_files)} selected videos")
+    
+    if not selected_video_files:
+        print("No valid videos selected for processing.")
+        return
     
     results = []
     
-    for video_file in video_files:
+    for video_file in selected_video_files:
         video_path = os.path.join(folder_path, video_file)
         txt_file = os.path.splitext(video_path)[0] + '.txt'
         
@@ -432,7 +504,21 @@ if __name__ == "__main__":
                         help='Directory to store output files (logs, videos). If not specified, files are stored in their default locations and cleaned up.')
     parser.add_argument('--model', type=str, default='best.pt',
                         help='Path to the model file to use for detection (default: best.pt)')
+    parser.add_argument('--input-index', type=str, default=None,
+                        help='Comma-separated indices of videos to process. Use -1 for all videos. If not specified, user will be prompted.')
     
     args = parser.parse_args()
     
-    main(args.folder, args.tolerance, args.output_dir, args.model)
+    # Parse input indices
+    input_indices = None
+    if args.input_index is not None:
+        if args.input_index.strip() == "-1":
+            input_indices = [-1]
+        else:
+            try:
+                input_indices = [int(x.strip()) for x in args.input_index.split(",") if x.strip()]
+            except ValueError:
+                print("Error: --input-index must be comma-separated integers or -1")
+                exit(1)
+    
+    main(args.folder, args.tolerance, args.output_dir, args.model, input_indices)
