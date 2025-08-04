@@ -8,7 +8,7 @@ import numpy as np
 import json
 import time
 from tqdm import tqdm
-from utils import score, detect_down, detect_up, in_hoop_region, clean_hoop_pos, clean_ball_pos, get_device
+from utils import score, detect_down, detect_up, in_hoop_region, clean_hoop_pos, select_ball, get_device
 from datetime import datetime
 import os
 
@@ -415,45 +415,42 @@ class ShotDetector:
                         'center': center,
                         'size': {'width': w, 'height': h},
                         'confidence': conf,
-                        'class': class_name
+                        'class': class_name,
+                        'frame': self.frame_count
                     }
 
                     # Classify detected object
                     if class_name.lower() in ['ball', 'sports ball']:
                         # Ball detection
                         current_frame_balls.append(detection_data)
+                    
                     elif class_name.lower() in ['hoop', 'basketball hoop', 'rim']:
                         # Hoop detection
                         current_frame_hoops.append(detection_data)
 
-                    # Draw bounding boxes
-                    if conf > 0.5:  # Only draw high confidence detections
-                        if class_name.lower() in ['ball', 'sports ball']:
-                            cvzone.cornerRect(self.frame, (x1, y1, w, h), colorR=(0, 0, 255), colorC=(0, 0, 255))  # Red for ball
-                            cv2.putText(self.frame, f'Ball {conf}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-                        elif class_name.lower() in ['hoop', 'basketball hoop', 'rim']:
-                            cvzone.cornerRect(self.frame, (x1, y1, w, h), colorR=(255, 0, 0), colorC=(255, 0, 0))  # Blue for hoop
-                            cv2.putText(self.frame, f'Hoop {conf}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-
             # Add ball and hoop positions to tracking arrays
-            for ball in current_frame_balls:
-                # Create ball points if high confidence
-                if ball['confidence'] > 0.5:
-                    center = ball['center']
-                    w = ball['size']['width']
-                    h = ball['size']['height']
-                    conf = ball['confidence']
-                    self.ball_pos.append((center, self.frame_count, w, h, conf))
-
+            # Select the best ball from current frame detections
+            selected_ball = select_ball(self.ball_pos, current_frame_balls, 0.5)
+            
+            # If a suitable ball was selected, add it to tracking
+            if selected_ball is not None:
+                center = selected_ball['center']
+                w = selected_ball['size']['width']
+                h = selected_ball['size']['height']
+                conf = selected_ball['confidence']
+                self.ball_pos.append((center, self.frame_count, w, h, conf))
+            
+            # Add high confidence hoops to tracking
             for hoop in current_frame_hoops:
-                # Create hoop points if high confidence
                 if hoop['confidence'] > 0.5:
                     center = hoop['center']
                     w = hoop['size']['width']
                     h = hoop['size']['height']
                     conf = hoop['confidence']
                     self.hoop_pos.append((center, self.frame_count, w, h, conf))
-                    cvzone.cornerRect(self.frame, (hoop['bbox'][0], hoop['bbox'][1], w, h))
+            
+            # Draw detected objects
+            self.draw_detections(current_frame_balls, selected_ball, current_frame_hoops)
 
             self.clean_motion()
             self.shot_detection()
@@ -508,9 +505,57 @@ class ShotDetector:
         
         return log_filename  # Return log filename for batch evaluator
 
+    def draw_detections(self, current_frame_balls, selected_ball, current_frame_hoops):
+        """Draw all detected objects with appropriate colors and labels"""
+        # Object type configuration
+        obj_configs = {
+            'ball': {
+                'color': (0, 255, 0),  # Green
+                'selected_color': (255, 0, 0),  # Blue
+                'label': 'Ball'
+            },
+            'selected_ball': {
+                'color': (255, 0, 0),  # Blue
+                'label': 'Selected Ball'
+            },
+            'hoop': {
+                'color': (0, 0, 255),  # Red
+                'label': 'Hoop'
+            }
+        }
+        
+        # Draw all balls
+        for ball in current_frame_balls:
+            x1, y1 = ball['bbox'][0], ball['bbox'][1]
+            w, h = ball['size']['width'], ball['size']['height']
+            conf = ball['confidence']
+            
+            # Determine if this is the selected ball
+            if selected_ball is not None and ball == selected_ball:
+                config = obj_configs['selected_ball']
+            else:
+                config = obj_configs['ball']
+            
+            # Draw the detection box and label
+            cvzone.cornerRect(self.frame, (x1, y1, w, h), colorR=config['color'], colorC=config['color'])
+            cv2.putText(self.frame, f'{config["label"]} {conf}', (x1, y1 - 10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, config['color'], 2)
+        
+        # Draw all hoops 
+        for hoop in current_frame_hoops:
+            x1, y1 = hoop['bbox'][0], hoop['bbox'][1]
+            w, h = hoop['size']['width'], hoop['size']['height']
+            conf = hoop['confidence']
+            
+            # Draw the detection box and label
+            cvzone.cornerRect(self.frame, (x1, y1, w, h), 
+                             colorR=obj_configs['hoop']['color'], 
+                             colorC=obj_configs['hoop']['color'])
+            cv2.putText(self.frame, f'{obj_configs["hoop"]["label"]} {conf}', 
+                       (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 
+                       obj_configs['hoop']['color'], 2)
+
     def clean_motion(self):
-        # Clean and display ball motion
-        self.ball_pos = clean_ball_pos(self.ball_pos, self.frame_count)
         for i in range(0, len(self.ball_pos)):
             cv2.circle(self.frame, self.ball_pos[i][0], 2, (0, 0, 255), 2)
 
@@ -523,12 +568,12 @@ class ShotDetector:
         if len(self.hoop_pos) > 0 and len(self.ball_pos) > 0:
             # Detecting when ball is in 'up' and 'down' area - ball can only be in 'down' area after it is in 'up'
             if not self.up:
-                self.up = detect_up(self.ball_pos, self.hoop_pos)
+                self.up = detect_up(self.ball_pos[-1], self.hoop_pos[-1])
                 if self.up:
                     self.up_frame = self.ball_pos[-1][1]
 
             if self.up and not self.down:
-                self.down = detect_down(self.ball_pos, self.hoop_pos)
+                self.down = detect_down(self.ball_pos[-1], self.hoop_pos[-1])
                 if self.down:
                     self.down_frame = self.ball_pos[-1][1]
 
