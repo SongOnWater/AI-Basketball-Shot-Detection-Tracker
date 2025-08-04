@@ -566,6 +566,8 @@ class ShotDetector:
 
     def shot_detection(self):
         if len(self.hoop_pos) > 0 and len(self.ball_pos) > 0:
+            if self.ball_pos[-1][1]!=self.hoop_pos[-1][1]:
+                return 
             # Detecting when ball is in 'up' and 'down' area - ball can only be in 'down' area after it is in 'up'
             if not self.up:
                 self.up = detect_up(self.ball_pos[-1], self.hoop_pos[-1])
