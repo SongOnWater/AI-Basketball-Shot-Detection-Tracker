@@ -3,11 +3,14 @@ import os
 import json
 import argparse
 from collections import defaultdict
-from shot_detector import ShotDetector
 import tempfile
 import shutil
 import glob
 from datetime import datetime
+import traceback
+
+# Import only the default implementation
+from shot_detector import ShotDetector as ShotDetectorDefault
 
 def load_ground_truth(txt_file):
     """
@@ -46,6 +49,7 @@ def evaluate_shots(ground_truth, detected_shots, frame_tolerance=30):
     tp_details = []
     fp_details = []
     fn_details = []
+    classification_errors = 0  # Count of classification errors
     
     # Create a copy of ground truth for tracking unmatched items
     unmatched_gt = ground_truth.copy()
@@ -65,7 +69,7 @@ def evaluate_shots(ground_truth, detected_shots, frame_tolerance=30):
             if gt_frame <= detected_frame <= gt_frame + frame_tolerance:
                 # Check if success/failure classification matches
                 if detected_successful == gt_successful:
-                    # Match found
+                    # Match found with correct classification
                     tp += 1
                     tp_details.append({
                         'ground_truth_frame': gt_frame,
@@ -74,13 +78,10 @@ def evaluate_shots(ground_truth, detected_shots, frame_tolerance=30):
                         'detected_success': detected_successful,
                         'frame_diff': detected_frame - gt_frame
                     })
-                    # Remove matched ground truth
-                    unmatched_gt.pop(i)
-                    matched = True
-                    break
                 else:
                     # Detected but with wrong classification
                     tp += 1  # Still count as detected
+                    classification_errors += 1
                     tp_details.append({
                         'ground_truth_frame': gt_frame,
                         'detected_frame': detected_frame,
@@ -89,13 +90,13 @@ def evaluate_shots(ground_truth, detected_shots, frame_tolerance=30):
                         'frame_diff': detected_frame - gt_frame,
                         'classification_error': True
                     })
-                    # Remove matched ground truth
-                    unmatched_gt.pop(i)
-                    matched = True
-                    break
+                # Remove matched ground truth
+                unmatched_gt.pop(i)
+                matched = True
+                break
         
         if not matched:
-            # False positive - detected shot with no corresponding ground truth
+            # False positive - detected shot that doesn't match any ground truth
             fp += 1
             fp_details.append({
                 'detected_frame': detected_frame,
@@ -110,28 +111,16 @@ def evaluate_shots(ground_truth, detected_shots, frame_tolerance=30):
             'ground_truth_success': gt_shot['successful']
         })
     
-    # Calculate metrics
-    total_gt_shots = len(ground_truth)
-    total_detected_shots = len(detected_shots)
-    
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-    f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-    
     return {
         'tp': tp,
         'fp': fp,
         'fn': fn,
-        'precision': precision,
-        'recall': recall,
-        'f1_score': f1_score,
-        'total_ground_truth_shots': total_gt_shots,
-        'total_detected_shots': total_detected_shots,
-        'details': {
-            'true_positives': tp_details,
-            'false_positives': fp_details,
-            'false_negatives': fn_details
-        }
+        'tp_details': tp_details,
+        'fp_details': fp_details,
+        'fn_details': fn_details,
+        'classification_errors': classification_errors,
+        'total_gt_shots': len(ground_truth),
+        'total_detected_shots': len(detected_shots)
     }
 
 def find_shot_log(video_name):
@@ -216,7 +205,7 @@ def move_log_files(shot_log_file, output_dir):
         if frame_log_file != final_frame_log:
             shutil.move(frame_log_file, final_frame_log)
 
-def process_video(video_path, txt_path, output_dir=None, model_path=None):
+def process_video(video_path, txt_path, output_dir=None, model_path=None, detector_version='default', frame_tolerance=30):
     """
     Process a single video and evaluate results
     
@@ -225,8 +214,15 @@ def process_video(video_path, txt_path, output_dir=None, model_path=None):
         txt_path: Path to the ground truth txt file
         output_dir: Directory to store output files (logs, videos)
         model_path: Path to the model file to use for detection
+        detector_version: Version of ShotDetector to use ('default')
+        frame_tolerance: Number of frames after ground truth frame to consider a match
     """
     print(f"Processing video: {video_path}")
+    
+    # Select the appropriate ShotDetector implementation
+    # Note: Only default implementation is now available
+    ShotDetectorClass = ShotDetectorDefault
+    print("Using default ShotDetector implementation")
     
     # Create output directory if specified
     if output_dir:
@@ -254,12 +250,13 @@ def process_video(video_path, txt_path, output_dir=None, model_path=None):
             debug_log_path = os.path.join(output_dir, f"{video_name}_{model_name}_debug_{timestamp}.txt")
         
         # Process video with shot detector
-        detector = ShotDetector(
+        # For default implementation, pass output_dir parameter
+        detector = ShotDetectorClass(
             input_video=video_path, 
             output_video=output_video_path, 
-            ball_model_path=model_path,  # This is compatible with our modified ShotDetector
-            output_dir=output_dir,  # Pass output directory to ShotDetector
-            debug_log_path=debug_log_path  # 传递调试日志路径
+            ball_model_path=model_path,
+            output_dir=output_dir,
+            debug_log_path=debug_log_path
         )
         
         # Actually run the detector to process the video
@@ -267,11 +264,22 @@ def process_video(video_path, txt_path, output_dir=None, model_path=None):
         shot_log_file = detector.run()  # Get the shot log file path directly from the detector
         print("Shot detection completed.")
         
-        # Find the shot log file (it should be in logs directory)
-        video_name = os.path.splitext(os.path.basename(video_path))[0]
-        model_name = os.path.splitext(os.path.basename(model_path))[0] if model_path else "default"
+        # Handle log file locations based on detector version
+        # For default version, file should already be in output_dir
+        if shot_log_file and os.path.exists(shot_log_file):
+            # File is already in the correct location
+            pass
+        else:
+            # Try to find it in output_dir
+            video_name = os.path.splitext(os.path.basename(video_path))[0]
+            model_name = os.path.splitext(os.path.basename(model_path))[0] if model_path else "default"
+            pattern = os.path.join(output_dir, f"{video_name}_{model_name}_shot_*.json")
+            matches = glob.glob(pattern)
+            if matches:
+                # Sort by modification time and get the most recent
+                matches.sort(key=os.path.getmtime, reverse=True)
+                shot_log_file = matches[0]
         
-        # Use the returned shot log file path directly
         if not shot_log_file or not os.path.exists(shot_log_file):
             print(f"No shot log file found for {video_name}")
             return None
@@ -281,19 +289,27 @@ def process_video(video_path, txt_path, output_dir=None, model_path=None):
         with open(shot_log_file, 'r') as f:
             shot_log_data = json.load(f)
         
-        detected_shots = shot_log_data.get('shots', [])
-        # Extract shot data from entries if needed
-        if detected_shots and 'shot' in detected_shots[0]:
-            detected_shots = [entry['shot'] for entry in detected_shots]
+        # Extract shot data based on the structure
+        detected_shots = []
+        
+        # Check if it's the default format (direct shots array)
+        if 'shots' in shot_log_data and isinstance(shot_log_data['shots'], list):
+            detected_shots = shot_log_data['shots']
+            # Check if we need to extract from entries (old format nested in entries)
+            if detected_shots and 'shot' in detected_shots[0]:
+                detected_shots = [entry['shot'] for entry in detected_shots]
+        # Check if it's the old format (entries array with shot objects)
+        elif 'entries' in shot_log_data and isinstance(shot_log_data['entries'], list):
+            # Extract shot objects from entries
+            for entry in shot_log_data['entries']:
+                if 'shot' in entry and isinstance(entry['shot'], dict):
+                    detected_shots.append(entry['shot'])
             
         print(f"Detected {len(detected_shots)} shots")
         
         # Evaluate
-        evaluation = evaluate_shots(ground_truth, detected_shots)
+        evaluation = evaluate_shots(ground_truth, detected_shots, frame_tolerance)
         evaluation['video_name'] = video_name
-        
-        # Move log files to output directory if specified
-        move_log_files(shot_log_file, output_dir)
         
         evaluation['shot_log_file'] = shot_log_file if os.path.exists(shot_log_file) else None
         return evaluation
@@ -322,73 +338,96 @@ def generate_report(results):
     print("BASKETBALL SHOT DETECTION EVALUATION REPORT")
     print("="*80)
     
+    # Overall statistics
     total_tp = sum(r['tp'] for r in results)
     total_fp = sum(r['fp'] for r in results)
     total_fn = sum(r['fn'] for r in results)
-    total_gt_shots = sum(r['total_ground_truth_shots'] for r in results)
+    total_gt_shots = sum(r['total_gt_shots'] for r in results)
     total_detected_shots = sum(r['total_detected_shots'] for r in results)
     
-    overall_precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
-    overall_recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
-    overall_f1 = 2 * (overall_precision * overall_recall) / (overall_precision + overall_recall) if (overall_precision + overall_recall) > 0 else 0
+    # Classification statistics
+    total_classification_errors = sum(r['classification_errors'] for r in results)
+    total_correct_classifications = total_tp - total_classification_errors
     
-    print(f"\nOVERALL RESULTS:")
+    # Calculate metrics
+    precision = total_tp / total_detected_shots if total_detected_shots > 0 else 0
+    recall = total_tp / total_gt_shots if total_gt_shots > 0 else 0
+    f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+    
+    # Classification accuracy
+    classification_accuracy = total_correct_classifications / total_tp if total_tp > 0 else 0
+    
+    # Print overall results
+    print("\nOVERALL RESULTS:")
     print(f"  Total Ground Truth Shots: {total_gt_shots}")
     print(f"  Total Detected Shots: {total_detected_shots}")
     print(f"  True Positives: {total_tp}")
     print(f"  False Positives: {total_fp}")
     print(f"  False Negatives: {total_fn}")
-    print(f"  Precision: {overall_precision:.4f}")
-    print(f"  Recall: {overall_recall:.4f}")
-    print(f"  F1-Score: {overall_f1:.4f}")
+    print(f"  Precision: {precision:.4f}")
+    print(f"  Recall: {recall:.4f}")
+    print(f"  F1-Score: {f1_score:.4f}")
+    print(f"  Classification Accuracy: {classification_accuracy:.4f} ({total_correct_classifications}/{total_tp})")
     
-    print(f"\nPER-VIDEO RESULTS:")
+    # Per-video results
+    print("\nPER-VIDEO RESULTS:")
     for result in results:
         print(f"\n  Video: {result['video_name']}")
-        print(f"    Ground Truth Shots: {result['total_ground_truth_shots']}")
+        print(f"    Ground Truth Shots: {result['total_gt_shots']}")
         print(f"    Detected Shots: {result['total_detected_shots']}")
         print(f"    True Positives: {result['tp']}")
         print(f"    False Positives: {result['fp']}")
         print(f"    False Negatives: {result['fn']}")
-        print(f"    Precision: {result['precision']:.4f}")
-        print(f"    Recall: {result['recall']:.4f}")
-        print(f"    F1-Score: {result['f1_score']:.4f}")
+        precision = result['tp'] / result['total_detected_shots'] if result['total_detected_shots'] > 0 else 0
+        recall = result['tp'] / result['total_gt_shots'] if result['total_gt_shots'] > 0 else 0
+        f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+        classification_accuracy = (result['tp'] - result['classification_errors']) / result['tp'] if result['tp'] > 0 else 0
+        print(f"    Precision: {precision:.4f}")
+        print(f"    Recall: {recall:.4f}")
+        print(f"    F1-Score: {f1_score:.4f}")
+        print(f"    Classification Accuracy: {classification_accuracy:.4f} ({result['tp'] - result['classification_errors']}/{result['tp']})")
     
+    # Detailed analysis
     print("\n" + "="*80)
     print("DETAILED ANALYSIS")
     print("="*80)
     
     for result in results:
         print(f"\nVideo: {result['video_name']}")
-        details = result['details']
         
-        if details['true_positives']:
-            print(f"  True Positives ({len(details['true_positives'])}):")
-            for tp in details['true_positives'][:5]:  # Show first 5
-                if tp.get('classification_error'):
-                    print(f"    Frame {tp['ground_truth_frame']} -> {tp['detected_frame']} "
-                          f"(Diff: {tp['frame_diff']} frames) - CLASSIFICATION ERROR")
-                else:
-                    print(f"    Frame {tp['ground_truth_frame']} -> {tp['detected_frame']} "
-                          f"(Diff: {tp['frame_diff']} frames)")
-            if len(details['true_positives']) > 5:
-                print(f"    ... and {len(details['true_positives']) - 5} more")
+        # True positives
+        if result['tp_details']:
+            print(f"  True Positives ({len(result['tp_details'])}):")
+            for detail in result['tp_details']:
+                classification_str = " - CLASSIFICATION ERROR" if detail.get('classification_error') else ""
+                print(f"    Frame {detail['ground_truth_frame']} -> {detail['detected_frame']} (Diff: {detail['frame_diff']} frames){classification_str}")
+        else:
+            print("  True Positives (0):")
         
-        if details['false_positives']:
-            print(f"  False Positives ({len(details['false_positives'])}):")
-            for fp in details['false_positives'][:5]:  # Show first 5
-                print(f"    Detected at frame {fp['detected_frame']} (Success: {fp['detected_success']})")
-            if len(details['false_positives']) > 5:
-                print(f"    ... and {len(details['false_positives']) - 5} more")
+        # False positives
+        if result['fp_details']:
+            print(f"  False Positives ({len(result['fp_details'])}):")
+            for detail in result['fp_details']:
+                print(f"    Detected at frame {detail['detected_frame']} (Success: {detail['detected_success']})")
+        else:
+            print("  False Positives (0):")
         
-        if details['false_negatives']:
-            print(f"  False Negatives ({len(details['false_negatives'])}):")
-            for fn in details['false_negatives'][:5]:  # Show first 5
-                print(f"    Ground truth at frame {fn['ground_truth_frame']} (Success: {fn['ground_truth_success']})")
-            if len(details['false_negatives']) > 5:
-                print(f"    ... and {len(details['false_negatives']) - 5} more")
+        # False negatives
+        if result['fn_details']:
+            print(f"  False Negatives ({len(result['fn_details'])}):")
+            for detail in result['fn_details']:
+                print(f"    Ground truth at frame {detail['ground_truth_frame']} (Success: {detail['ground_truth_success']})")
+        else:
+            print("  False Negatives (0):")
+        
+        # Classification errors
+        classification_errors = [d for d in result['tp_details'] if d.get('classification_error')]
+        if classification_errors:
+            print(f"  Classification Errors ({len(classification_errors)}):")
+            for error in classification_errors:
+                print(f"    Frame {error['ground_truth_frame']}: Ground Truth Success={error['ground_truth_success']}, Detected Success={error['detected_success']}")
 
-def main(folder_path, frame_tolerance=30, output_dir=None, model_path=None, input_indices=None):
+def main(folder_path, frame_tolerance=30, output_dir=None, model_path=None, input_indices=None, detector_version='default'):
     """
     Main function to process all video-txt pairs in a folder
     
@@ -399,6 +438,7 @@ def main(folder_path, frame_tolerance=30, output_dir=None, model_path=None, inpu
         model_path: Path to the model file to use for detection
         input_indices: List of indices to process. If None, process all files.
                       If [-1], process all files. Otherwise, process only specified indices.
+        detector_version: Version of ShotDetector to use ('default')
     """
     print(f"Starting batch evaluation on folder: {folder_path}")
     print(f"Frame tolerance: {frame_tolerance} frames")
@@ -407,6 +447,7 @@ def main(folder_path, frame_tolerance=30, output_dir=None, model_path=None, inpu
     if output_dir:
         print(f"Output directory: {output_dir}")
         os.makedirs(output_dir, exist_ok=True)
+    print(f"Detector version: {detector_version}")
     
     # Check if folder exists
     if not os.path.exists(folder_path):
@@ -475,7 +516,7 @@ def main(folder_path, frame_tolerance=30, output_dir=None, model_path=None, inpu
             continue
         
         # Process the video
-        result = process_video(video_path, txt_file, output_dir, model_path)
+        result = process_video(video_path, txt_file, output_dir, model_path, detector_version)
         if result:
             results.append(result)
     
@@ -506,6 +547,8 @@ if __name__ == "__main__":
                         help='Path to the model file to use for detection (default: best.pt)')
     parser.add_argument('--input-index', type=str, default=None,
                         help='Comma-separated indices of videos to process. Use -1 for all videos. If not specified, user will be prompted.')
+    parser.add_argument('--detector-version', type=str, default='default', choices=['default'],
+                        help='Version of ShotDetector to use: default (default: default)')
     
     args = parser.parse_args()
     
@@ -521,4 +564,4 @@ if __name__ == "__main__":
                 print("Error: --input-index must be comma-separated integers or -1")
                 exit(1)
     
-    main(args.folder, args.tolerance, args.output_dir, args.model, input_indices)
+    main(args.folder, args.tolerance, args.output_dir, args.model, input_indices, args.detector_version)
