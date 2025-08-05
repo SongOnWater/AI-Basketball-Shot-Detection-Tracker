@@ -152,6 +152,9 @@ class FrameLogAnalyzer:
             print(f"  Confidence - Min: {min(ball_confidences):.3f}, Max: {max(ball_confidences):.3f}")
             print(f"  Confidence - Mean: {np.mean(ball_confidences):.3f}, Std: {np.std(ball_confidences):.3f}")
             print(f"  Above 0.5: {sum(1 for c in ball_confidences if c > 0.5)} ({sum(1 for c in ball_confidences if c > 0.5)/len(ball_confidences)*100:.1f}%)")
+            
+            # Detailed distribution
+            self._print_confidence_distribution(ball_confidences, "Ball")
         
         if hoop_confidences:
             print(f"\n🏀 CURRENT FRAME HOOP DETECTIONS:")
@@ -159,6 +162,9 @@ class FrameLogAnalyzer:
             print(f"  Confidence - Min: {min(hoop_confidences):.3f}, Max: {max(hoop_confidences):.3f}")
             print(f"  Confidence - Mean: {np.mean(hoop_confidences):.3f}, Std: {np.std(hoop_confidences):.3f}")
             print(f"  Above 0.6: {sum(1 for c in hoop_confidences if c > 0.6)} ({sum(1 for c in hoop_confidences if c > 0.6)/len(hoop_confidences)*100:.1f}%)")
+            
+            # Detailed distribution
+            self._print_confidence_distribution(hoop_confidences, "Hoop")
         
         # Trajectory data analysis
         if trajectory_ball_confidences:
@@ -166,12 +172,31 @@ class FrameLogAnalyzer:
             print(f"  Count: {len(trajectory_ball_confidences)}")
             print(f"  Confidence - Min: {min(trajectory_ball_confidences):.3f}, Max: {max(trajectory_ball_confidences):.3f}")
             print(f"  Confidence - Mean: {np.mean(trajectory_ball_confidences):.3f}, Std: {np.std(trajectory_ball_confidences):.3f}")
+            
+            # Detailed distribution
+            self._print_confidence_distribution(trajectory_ball_confidences, "Trajectory Ball")
         
         if trajectory_hoop_confidences:
             print(f"\n📍 TRAJECTORY HOOP POINTS:")
             print(f"  Count: {len(trajectory_hoop_confidences)}")
             print(f"  Confidence - Min: {min(trajectory_hoop_confidences):.3f}, Max: {max(trajectory_hoop_confidences):.3f}")
             print(f"  Confidence - Mean: {np.mean(trajectory_hoop_confidences):.3f}, Std: {np.std(trajectory_hoop_confidences):.3f}")
+            
+            # Detailed distribution
+            self._print_confidence_distribution(trajectory_hoop_confidences, "Trajectory Hoop")
+    
+    def _print_confidence_distribution(self, confidences, label):
+        """Print detailed confidence distribution"""
+        if not confidences:
+            return
+            
+        # Create bins for confidence distribution
+        bins = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+        hist, bin_edges = np.histogram(confidences, bins=bins)
+        
+        print(f"  {label} Confidence Distribution:")
+        for i in range(len(hist)):
+            print(f"    [{bin_edges[i]:.1f}-{bin_edges[i+1]:.1f}]: {hist[i]} detections ({hist[i]/len(confidences)*100:.1f}%)")
     
     def detection_timeline(self):
         """Analyze detection patterns over time"""

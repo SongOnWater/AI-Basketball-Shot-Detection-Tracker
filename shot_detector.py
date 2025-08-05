@@ -329,6 +329,8 @@ class ShotDetector:
         self.down = False
         self.up_frame = 0
         self.down_frame = 0
+        self.up_hoop_frame = 0
+        self.down_hoop_frame = 0
 
         # Used for green and red colors after make/miss
         self.fade_frames = 20
@@ -566,18 +568,18 @@ class ShotDetector:
 
     def shot_detection(self):
         if len(self.hoop_pos) > 0 and len(self.ball_pos) > 0:
-            if self.ball_pos[-1][1]!=self.hoop_pos[-1][1]:
-                return 
             # Detecting when ball is in 'up' and 'down' area - ball can only be in 'down' area after it is in 'up'
             if not self.up:
                 self.up = detect_up(self.ball_pos[-1], self.hoop_pos[-1])
                 if self.up:
                     self.up_frame = self.ball_pos[-1][1]
+                    self.up_hoop_frame = self.hoop_pos[-1][1]
 
             if self.up and not self.down:
                 self.down = detect_down(self.ball_pos[-1], self.hoop_pos[-1])
                 if self.down:
                     self.down_frame = self.ball_pos[-1][1]
+                    self.down_hoop_frame = self.hoop_pos[-1][1]
 
             # If ball goes from 'up' area to 'down' area in that order, increase attempt and reset
             if self.frame_count % 10 == 0:
@@ -592,7 +594,9 @@ class ShotDetector:
                     # Add more context information to debug dictionary
                     debug_info['shot_context'] = {
                         'up_frame': self.up_frame,
+                        'up_hoop_frame': self.up_hoop_frame,
                         'down_frame': self.down_frame,
+                        'down_hoop_frame': self.down_hoop_frame,
                         'frames_between_up_down': self.down_frame - self.up_frame,
                         'total_ball_positions': len(self.ball_pos),
                         'total_hoop_positions': len(self.hoop_pos)

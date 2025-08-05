@@ -149,6 +149,10 @@ def detect_down(ball_data, hoop_data):
     Returns:
         bool: True if ball is below the net
     """
+    # Check if frame counts match
+    if ball_data[1] != hoop_data[1]:
+        return False
+        
     y = hoop_data[0][1] + 0.5 * hoop_data[3]
     if ball_data[0][1] > y:
         return True
@@ -167,6 +171,10 @@ def detect_up(ball_data, hoop_data):
     Returns:
         bool: True if ball is around the backboard
     """
+    # Check if frame counts match
+    if ball_data[1] != hoop_data[1]:
+        return False
+        
     x1 = hoop_data[0][0] - 4 * hoop_data[2]
     x2 = hoop_data[0][0] + 4 * hoop_data[2]
     y1 = hoop_data[0][1] - 2 * hoop_data[3]
@@ -188,7 +196,7 @@ def in_hoop_region(center, hoop_data):
         
     Returns:
         bool: True if center point is near the hoop
-    """
+    """    
     x = center[0]
     y = center[1]
 
