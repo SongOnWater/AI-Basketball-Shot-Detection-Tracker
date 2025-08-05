@@ -564,6 +564,8 @@ class ShotDetector:
         # Clean hoop motion and display current hoop center
         if len(self.hoop_pos) > 1:
             self.hoop_pos = clean_hoop_pos(self.hoop_pos)
+        # Only draw hoop position if we have at least one position
+        if len(self.hoop_pos) > 0:
             cv2.circle(self.frame, self.hoop_pos[-1][0], 2, (128, 128, 0), 2)
 
     def shot_detection(self):
@@ -638,6 +640,10 @@ class ShotDetector:
                         is_successful=is_successful,
                         debug_info=debug_info
                     )
+                    
+                    # Clear trajectory data to prevent data pollution in subsequent shot detections
+                    self.ball_pos.clear()
+                    self.hoop_pos.clear()
                     
                     if is_successful:
                         self.makes += 1
