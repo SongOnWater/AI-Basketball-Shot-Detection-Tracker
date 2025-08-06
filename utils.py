@@ -41,17 +41,6 @@ def score(ball_pos, hoop_pos, debug_info=None):
         'rim_height': rim_height
     }
     
-    # Record ball trajectory points
-    trajectory_points = []
-    for i in range(len(ball_pos)):
-        trajectory_points.append({
-            'position': {'x': ball_pos[i][0][0], 'y': ball_pos[i][0][1]},
-            'frame': ball_pos[i][1],
-            'width': ball_pos[i][2],
-            'height': ball_pos[i][3],
-            'confidence': ball_pos[i][4] if len(ball_pos[i]) > 4 else None
-        })
-    debug_info['ball_trajectory'] = trajectory_points
 
     # Get first point above rim and first point below rim
     above_point = None
