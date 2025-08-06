@@ -70,8 +70,8 @@ def score(ball_pos, hoop_pos, debug_info=None):
                 if above_point and below_point :
                     break
             
-            rim_below = hoop[0][1] + 0.5 * hoop[3]
-            if below_point is None and ball[0][1] > rim_below:
+            #rim_below = hoop[0][1] + 0.5 * hoop[3]
+            if below_point is None and ball[0][1] > rim_above:
                 below_hoop_pos=hoop
                 x.append(ball[0][0])
                 y.append(ball[0][1])
@@ -88,20 +88,20 @@ def score(ball_pos, hoop_pos, debug_info=None):
                     break
 
     
-    # 如果没找到匹配的帧，记录失败原因并返回false
+    # If no matching frame is found, record the failure reason and return false
     if not found_matching_frame:
-        debug_info['failure_reason'] = "未找到与篮球数据匹配的篮筐帧"
+        debug_info['failure_reason'] = "No matching hoop frame found for ball data"
         return False
     
 
-    # 如果没找到同一帧的above_point，记录失败原因并返回false
+    # If no above_point is found in the same frame, record the failure reason and return false
     if above_point is None:
-        debug_info['failure_reason'] = "未找到与篮筐同一帧的above_point数据"
+        debug_info['failure_reason'] = "No above_point data found for the same frame as hoop"
         return False
     
-    # 如果没找到同一帧的below_point，记录失败原因并返回false
+    # If no below_point is found in the same frame, record the failure reason and return false
     if below_point is None:
-        debug_info['failure_reason'] = "未找到与篮筐同一帧的below_point数据"
+        debug_info['failure_reason'] = "No below_point data found for the same frame as hoop"
         return False
 
     debug_info['key_points'] = {
@@ -234,7 +234,7 @@ def detect_down(ball_data, hoop_data):
         #print(f"DEBUG: detect_down - Frame mismatch. Ball frame: {ball_data[1]}, Hoop frame: {hoop_data[1]}")
         return False
         
-    y = hoop_data[0][1] + 0.5 * hoop_data[3]
+    y = hoop_data[0][1] # + 0.5 * hoop_data[3]
     result = ball_data[0][1] > y
     #print(f"DEBUG: detect_down - Ball Y: {ball_data[0][1]}, Hoop Y threshold: {y}, Result: {result}")
     return result

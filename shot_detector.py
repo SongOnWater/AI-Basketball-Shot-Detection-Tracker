@@ -443,7 +443,6 @@ class ShotDetector:
 
         # Scene change detection using PySceneDetect
         self.scene_changes = []
-        self.next_scene_frame = None
         self.scene_change_threshold = 40.0  # Default threshold for scene change detection
         self._detect_scene_changes()
         
@@ -599,27 +598,33 @@ class ShotDetector:
 
             # Add ball and hoop positions to tracking arrays
             # Select the best ball from current frame detections
-            selected_ball = select_ball(self.ball_pos, current_frame_balls, 0.5)
+            selected_ball_dic = select_ball(self.ball_pos, current_frame_balls, 0.5)
+            selected_ball = None
+            selected_hoop = None
             
             # If a suitable ball was selected, add it to tracking
-            if selected_ball is not None:
-                center = selected_ball['center']
-                w = selected_ball['size']['width']
-                h = selected_ball['size']['height']
-                conf = selected_ball['confidence']
-                self.ball_pos.append((center, self.frame_count, w, h, conf))
+            if selected_ball_dic is not None:
+                center = selected_ball_dic['center']
+                w = selected_ball_dic['size']['width']
+                h = selected_ball_dic['size']['height']
+                conf = selected_ball_dic['confidence']
+                selected_ball =(center, self.frame_count, w, h, conf)
+                self.ball_pos.append(selected_ball)
             
-            # Add high confidence hoops to tracking
-            for hoop in current_frame_hoops:
-                if hoop['confidence'] > 0.5:
-                    center = hoop['center']
-                    w = hoop['size']['width']
-                    h = hoop['size']['height']
-                    conf = hoop['confidence']
-                    self.hoop_pos.append((center, self.frame_count, w, h, conf))
+                # Add the highest confidence hoop to tracking
+                if current_frame_hoops:
+                    # Find the hoop with highest confidence
+                    best_hoop = max(current_frame_hoops, key=lambda x: x['confidence'])
+                    if best_hoop['confidence'] > 0.5:
+                        center = best_hoop['center']
+                        w = best_hoop['size']['width']
+                        h = best_hoop['size']['height']
+                        conf = best_hoop['confidence']
+                        selected_hoop= (center, self.frame_count, w, h, conf)
+                        self.hoop_pos.append(selected_hoop)
             
             # Draw detected objects
-            self.draw_detections(current_frame_balls, selected_ball, current_frame_hoops)
+            self.draw_detections(current_frame_balls, selected_ball_dic, current_frame_hoops)
 
             
             # Log frame data before incrementing frame count
@@ -641,6 +646,11 @@ class ShotDetector:
             )
 
             self.clean_motion()
+
+            self.detect_up_state(selected_ball, selected_hoop)
+            self.detect_down_state(selected_ball, selected_hoop)
+
+
             self.shot_detection()
             self.display_score()
             
@@ -753,8 +763,8 @@ class ShotDetector:
             cv2.circle(self.frame, self.ball_pos[i][0], 4, (255, 255, 255), 2)
 
         # Clean hoop motion and display current hoop center
-        if len(self.hoop_pos) > 1:
-            self.hoop_pos = clean_hoop_pos(self.hoop_pos)
+        # if len(self.hoop_pos) > 1:
+        #     self.hoop_pos = clean_hoop_pos(self.hoop_pos)
         # Only draw hoop position if we have at least one position
         if len(self.hoop_pos) > 0:
             # Draw hoop position with enhanced visibility
@@ -762,86 +772,82 @@ class ShotDetector:
             # Add a border for better visibility
             cv2.circle(self.frame, self.hoop_pos[-1][0], 4, (255, 255, 255), 2)
 
-    def shot_detection(self):
+    def detect_up_state(self, ball_pos, hoop_pos):
         """
-        Detect basketball shots based on ball and hoop movement patterns.
-        Records shot attempts and determines success based on ball trajectory.
+        Detect UP state (ball approaching hoop from below) and update tracking variables.
+
         """
-        # Skip if not a detection frame and not at a scene change
-        if (self.frame_count % 10 != 0 and 
-            (self.next_scene_frame is None or self.frame_count < self.next_scene_frame)):
-            return
-
-        # Log basic frame info
-        self.logger.debug_log({
-            "event": "shot_detection_start",
-            "frame": self.frame_count,
-            "total_balls": len(self.ball_pos),
-            "total_hoops": len(self.hoop_pos),
-            "scene_changes_remaining": len(self.scene_changes) if self.scene_changes else 0,
-            "next_scene_frame": self.next_scene_frame if self.scene_changes else None
-        })
-
         # Detect UP state (ball approaching hoop from below)
-        up = detect_up(self.ball_pos[-1], self.hoop_pos[-1]) if self.ball_pos and self.hoop_pos else False
+        up = detect_up(ball_pos, hoop_pos) if ball_pos and hoop_pos else False
         self.logger.debug_log({
             "event": "up_detection",
             "frame": self.frame_count,
-            "has_ball": bool(self.ball_pos),
-            "has_hoop": bool(self.hoop_pos),
-            "ball_frame": self.ball_pos[-1][1] if self.ball_pos else None,
-            "hoop_frame": self.hoop_pos[-1][1] if self.hoop_pos else None,
+            "has_ball": bool(ball_pos),
+            "has_hoop": bool(hoop_pos),
+            "ball_frame": ball_pos[1] if ball_pos else None,
+            "hoop_frame": hoop_pos[1] if hoop_pos else None,
             "result": up
         })
 
         # Update UP state if detection was successful
         if up:
             self.up = True
-            self.up_frame = self.ball_pos[-1][1] if self.ball_pos else self.frame_count
-            self.up_hoop_frame = self.hoop_pos[-1][1] if self.hoop_pos else self.frame_count
+            self.up_frame = ball_pos[1] if ball_pos else self.frame_count
+            self.up_hoop_frame = hoop_pos[1] if hoop_pos else self.frame_count
             self.logger.debug_log({
                 "event": "up_state_set",
                 "frame": self.frame_count,
                 "up_frame": self.up_frame,
                 "up_hoop_frame": self.up_hoop_frame,
-                "ball_confidence": self.ball_pos[-1][4] if self.ball_pos else None,
-                "hoop_confidence": self.hoop_pos[-1][4] if self.hoop_pos else None
+                "ball_confidence": ball_pos[4] if ball_pos else None,
+                "hoop_confidence": hoop_pos[4] if hoop_pos else None
             })
+        
+        return up
 
+    def detect_down_state(self, ball_pos, hoop_pos):
+        """
+        Detect DOWN state (ball passing through hoop area) and update tracking variables.
+        """
         # Detect DOWN state (ball passing through hoop area)
         down = False
         if self.up:
-            down = detect_down(self.ball_pos[-1], self.hoop_pos[-1]) if self.ball_pos and self.hoop_pos else False
+            down = detect_down(ball_pos, hoop_pos) if ball_pos and hoop_pos else False
             self.logger.debug_log({
                 "event": "down_detection",
                 "frame": self.frame_count,
-                "has_ball": bool(self.ball_pos),
-                "has_hoop": bool(self.hoop_pos),
-                "ball_frame": self.ball_pos[-1][1] if self.ball_pos else None,
-                "hoop_frame": self.hoop_pos[-1][1] if self.hoop_pos else None,
+                "has_ball": bool(ball_pos),
+                "has_hoop": bool(hoop_pos),
+                "ball_frame": ball_pos[1] if ball_pos else None,
+                "hoop_frame": hoop_pos[1] if hoop_pos else None,
                 "result": down
             })
 
         # Handle DOWN state
         if self.up and down:
             self.down = True
-            self.down_frame = self.ball_pos[-1][1] if self.ball_pos else self.frame_count
-            self.down_hoop_frame = self.hoop_pos[-1][1] if self.hoop_pos else self.frame_count
+            self.down_frame = ball_pos[1] if ball_pos else self.frame_count
+            self.down_hoop_frame = hoop_pos[1] if hoop_pos else self.frame_count
             self.logger.debug_log({
                 "event": "down_state_set",
                 "frame": self.frame_count,
                 "down_frame": self.down_frame,
                 "down_hoop_frame": self.down_hoop_frame,
-                "ball_confidence": self.ball_pos[-1][4] if self.ball_pos else None,
-                "hoop_confidence": self.hoop_pos[-1][4] if self.hoop_pos else None
+                "ball_confidence": ball_pos[4] if ball_pos else None,
+                "hoop_confidence": hoop_pos[4] if hoop_pos else None
             })
+        
+        return down
 
-        # Check if we should perform shot detection
+    def should_detect_shot(self):
+        """
+        Determine if we should perform shot detection based on frame interval or scene changes.
+        """
         should_detect_shot = False
         scene_change_triggered = False
         
         # Regular 10-frame interval check
-        if self.frame_count % 10 == 0:
+        if self.frame_count % 10 == 0 :
             should_detect_shot = True
             self.logger.debug_log({
                 "event": "regular_shot_detection",
@@ -850,7 +856,7 @@ class ShotDetector:
             })
 
         # Check for scene change - perform shot detection before the scene change
-        if (self.next_scene_frame is not None and self.frame_count >= self.next_scene_frame):
+        if self.frame_count in self.scene_changes:
             should_detect_shot = True
             scene_change_triggered = True
             self.logger.debug_log({
@@ -860,94 +866,129 @@ class ShotDetector:
                 "triggered": True
             })
             
-            # Move to next scene change frame
-            if self.scene_changes:
-                self.scene_changes.pop(0)
-                self.next_scene_frame = self.scene_changes[0] if self.scene_changes else None
+        return should_detect_shot, scene_change_triggered
+
+    def process_shot(self, scene_change_triggered):
+        """
+        Process shot attempt and determine if it was successful.
+        """
+        self.logger.debug_log({
+            "event": "shot_conditions_met",
+            "frame": self.frame_count,
+            "up": self.up,
+            "down": self.down,
+            "up_frame": self.up_frame,
+            "down_frame": self.down_frame,
+            "should_detect_shot": True,
+            "scene_change_triggered": scene_change_triggered
+        })
+        
+        self.attempts += 1
+        self.up = False
+        self.down = False
+
+        # Create debug info dictionary
+        debug_info = {
+            "event": "shot_attempt",
+            "frame": self.frame_count,
+            "up_frame": self.up_frame,
+            "up_hoop_frame": self.up_hoop_frame,
+            "down_frame": self.down_frame,
+            "down_hoop_frame": self.down_hoop_frame,
+            "frames_between_up_down": self.down_frame - self.up_frame,
+            "total_ball_positions": len(self.ball_pos),
+            "total_hoop_positions": len(self.hoop_pos),
+            "scene_change_triggered": scene_change_triggered,
+            "ball_positions": [{
+                "frame": pos[1],
+                "position": {"x": pos[0][0], "y": pos[0][1]},
+                "size": {"width": pos[2], "height": pos[3]},
+                "confidence": float(pos[4])
+            } for pos in self.ball_pos] if self.ball_pos else [],
+            "hoop_positions": [{
+                "frame": pos[1],
+                "position": {"x": pos[0][0], "y": pos[0][1]},
+                "size": {"width": pos[2], "height": pos[3]},
+                "confidence": float(pos[4])
+            } for pos in self.hoop_pos] if self.hoop_pos else []
+        }
+        
+        # Check if it's a make or miss with debug info
+        is_successful = score(self.ball_pos, self.hoop_pos, debug_info)
+        timestamp = self.frame_count / 30  # assuming 30fps
+        
+        # Log shot (both makes and misses) with debug info
+        self.logger.log_shot(
+            frame_idx=self.frame_count,
+            timestamp=timestamp,
+            ball_pos=self.ball_pos[-1][0] if self.ball_pos else (0, 0),
+            hoop_pos=self.hoop_pos[-1][0] if self.hoop_pos else (0, 0),
+            ball_confidence=self.ball_pos[-1][4] if self.ball_pos else 0.0,
+            is_successful=is_successful,
+            debug_info=debug_info
+        )
+        
+        # Clear trajectory data to prevent data pollution in subsequent shot detections
+        self.ball_pos.clear()
+        self.hoop_pos.clear()
+        
+        if is_successful:
+            self.makes += 1
+            self.overlay_color = (0, 255, 0)  # Green for make
+            self.overlay_text = "Make"
+            self.fade_counter = self.fade_frames
+            self.logger.debug_log({
+                "event": "successful_shot",
+                "frame": self.frame_count,
+                "make_count": self.makes,
+                "total_attempts": self.attempts
+            })
+        else:
+            self.overlay_color = (255, 0, 0)  # Red for miss
+            self.overlay_text = "Miss"
+            self.fade_counter = self.fade_frames
+            self.logger.debug_log({
+                "event": "missed_shot",
+                "frame": self.frame_count,
+                "miss_count": self.attempts - self.makes,
+                "total_attempts": self.attempts
+            })
+
+    def reset_after_scene_change(self):
+        """
+        Reset all tracking data after a scene change.
+        """
+        # Clear trajectory data to prevent data pollution in subsequent shot detections
+        self.ball_pos.clear()
+        self.hoop_pos.clear()
+        
+        # Reset all tracking data for fresh start after scene change
+        self.up = False
+        self.down = False
+        self.up_frame = 0
+        self.down_frame = 0
+        self.up_hoop_frame = 0
+        self.down_hoop_frame = 0
+
+    def shot_detection(self):
+        """
+        Detect basketball shots based on ball and hoop movement patterns.
+        Records shot attempts and determines success based on ball trajectory.
+        """
+        # Log basic frame info
+        self.logger.debug_log({
+            "event": "shot_detection_start",
+            "frame": self.frame_count,
+            "total_balls": len(self.ball_pos),
+            "total_hoops": len(self.hoop_pos),
+            "scene_changes_remaining": len(self.scene_changes) if self.scene_changes else 0,
+        })
+        # Check if we should perform shot detection
+        should_detect_shot, scene_change_triggered = self.should_detect_shot()
 
         # If ball goes from 'up' area to 'down' area in that order, increase attempt and reset
         if self.up and self.down and self.up_frame < self.down_frame and should_detect_shot:
-            self.logger.debug_log({
-                "event": "shot_conditions_met",
-                "frame": self.frame_count,
-                "up": self.up,
-                "down": self.down,
-                "up_frame": self.up_frame,
-                "down_frame": self.down_frame,
-                "should_detect_shot": should_detect_shot,
-                "scene_change_triggered": scene_change_triggered
-            })
-            
-            self.attempts += 1
-            self.up = False
-            self.down = False
-
-            # Create debug info dictionary
-            debug_info = {
-                "event": "shot_attempt",
-                "frame": self.frame_count,
-                "up_frame": self.up_frame,
-                "up_hoop_frame": self.up_hoop_frame,
-                "down_frame": self.down_frame,
-                "down_hoop_frame": self.down_hoop_frame,
-                "frames_between_up_down": self.down_frame - self.up_frame,
-                "total_ball_positions": len(self.ball_pos),
-                "total_hoop_positions": len(self.hoop_pos),
-                "scene_change_triggered": scene_change_triggered,
-                "ball_positions": [{
-                    "frame": pos[1],
-                    "position": {"x": pos[0][0], "y": pos[0][1]},
-                    "size": {"width": pos[2], "height": pos[3]},
-                    "confidence": float(pos[4])
-                } for pos in self.ball_pos] if self.ball_pos else [],
-                "hoop_positions": [{
-                    "frame": pos[1],
-                    "position": {"x": pos[0][0], "y": pos[0][1]},
-                    "size": {"width": pos[2], "height": pos[3]},
-                    "confidence": float(pos[4])
-                } for pos in self.hoop_pos] if self.hoop_pos else []
-            }
-            
-            # Check if it's a make or miss with debug info
-            is_successful = score(self.ball_pos, self.hoop_pos, debug_info)
-            timestamp = self.frame_count / 30  # assuming 30fps
-            
-            # Log shot (both makes and misses) with debug info
-            self.logger.log_shot(
-                frame_idx=self.frame_count,
-                timestamp=timestamp,
-                ball_pos=self.ball_pos[-1][0] if self.ball_pos else (0, 0),
-                hoop_pos=self.hoop_pos[-1][0] if self.hoop_pos else (0, 0),
-                ball_confidence=self.ball_pos[-1][4] if self.ball_pos else 0.0,
-                is_successful=is_successful,
-                debug_info=debug_info
-            )
-            
-            # Clear trajectory data to prevent data pollution in subsequent shot detections
-            self.ball_pos.clear()
-            self.hoop_pos.clear()
-            
-            if is_successful:
-                self.makes += 1
-                self.overlay_color = (0, 255, 0)  # Green for make
-                self.overlay_text = "Make"
-                self.fade_counter = self.fade_frames
-                self.logger.debug_log({
-                    "event": "successful_shot",
-                    "frame": self.frame_count,
-                    "make_count": self.makes,
-                    "total_attempts": self.attempts
-                })
-            else:
-                self.overlay_color = (255, 0, 0)  # Red for miss
-                self.overlay_text = "Miss"
-                self.fade_counter = self.fade_frames
-                self.logger.debug_log({
-                    "event": "missed_shot",
-                    "frame": self.frame_count,
-                    "miss_count": self.attempts - self.makes,
-                    "total_attempts": self.attempts
-                })
+            self.process_shot(scene_change_triggered)
         
         # If this was triggered by a scene change, reset all tracking data regardless of shot detection
         if scene_change_triggered:
@@ -956,18 +997,8 @@ class ShotDetector:
                 "frame": self.frame_count,
                 "scene_change_triggered": scene_change_triggered
             })
-            
-            # Clear trajectory data to prevent data pollution in subsequent shot detections
-            self.ball_pos.clear()
-            self.hoop_pos.clear()
-            
-            # Reset all tracking data for fresh start after scene change
-            self.up = False
-            self.down = False
-            self.up_frame = 0
-            self.down_frame = 0
-            self.up_hoop_frame = 0
-            self.down_hoop_frame = 0
+            self.reset_after_scene_change()
+
     def display_score(self):
         # Add text with better visibility
         text = str(self.makes) + " / " + str(self.attempts)
