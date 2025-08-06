@@ -31,32 +31,79 @@ def score(ball_pos, hoop_pos, debug_info=None):
     
     x = []
     y = []
-    rim_height = hoop_pos[-1][0][1] - 0.5 * hoop_pos[-1][3]
     
-    # Record hoop information
-    debug_info['hoop_info'] = {
-        'position': {'x': hoop_pos[-1][0][0], 'y': hoop_pos[-1][0][1]},
-        'width': hoop_pos[-1][2],
-        'height': hoop_pos[-1][3],
-        'rim_height': rim_height
-    }
+    # 创建一个字典来快速查找ball_pos中特定帧的数据
+    ball_frames = {pos[1]: pos for pos in ball_pos}
     
-
-    # Get first point above rim and first point below rim
+    # 从hoop_pos的最后一帧开始向前查找，直到找到与篮球数据匹配的帧
+    found_matching_frame = False
+    
+    above_hoop_pos = None
+    below_hoop_pos = None
+    rim_above = None
+    rim_below = None
+        # Get first point above rim and first point below rim
     above_point = None
     below_point = None
+
+    for i in reversed(range(len(hoop_pos))):
+        hoop_frame = hoop_pos[i][1]
+        if hoop_frame in ball_frames:
+            # 找到了匹配的帧
+            found_matching_frame = True
+            hoop = hoop_pos[i]
+            ball = ball_frames[hoop_frame]
+
+            rim_above = hoop[0][1] - 0.5 * hoop[3]
+            if above_point is None and ball[0][1] < rim_above:
+                above_hoop_pos=hoop
+                x.append(ball[0][0])
+                y.append(ball[0][1])
+                above_point = {'x': ball[0][0], 'y': ball[0][1], 'frame':ball[1]}
+                debug_info['hoop_info_above_rim'] = {
+                    'position': {'x': hoop[0][0], 'y': hoop[0][1]},
+                    'width': hoop[2],
+                    'height': hoop[3],
+                    'rim_height': rim_above,
+                    'frame': hoop_frame
+                }
+                if above_point and below_point :
+                    break
+            
+            rim_below = hoop[0][1] + 0.5 * hoop[3]
+            if below_point is None and ball[0][1] > rim_below:
+                below_hoop_pos=hoop
+                x.append(ball[0][0])
+                y.append(ball[0][1])
+                below_point = {'x': ball[0][0], 'y': ball[0][1], 'frame': ball[1]}
+                 
+                debug_info['hoop_info_below_rim'] = {
+                    'position': {'x': hoop[0][0], 'y': hoop[0][1]},
+                    'width': hoop[2],
+                    'height': hoop[3],
+                    'rim_height': rim_above,
+                    'frame': hoop_frame
+                }
+                if above_point and below_point :
+                    break
+
     
-    for i in reversed(range(len(ball_pos))):
-        if ball_pos[i][0][1] < rim_height:
-            x.append(ball_pos[i][0][0])
-            y.append(ball_pos[i][0][1])
-            above_point = {'x': ball_pos[i][0][0], 'y': ball_pos[i][0][1], 'frame': ball_pos[i][1]}
-            if i + 1 < len(ball_pos):
-                x.append(ball_pos[i + 1][0][0])
-                y.append(ball_pos[i + 1][0][1])
-                below_point = {'x': ball_pos[i + 1][0][0], 'y': ball_pos[i + 1][0][1], 'frame': ball_pos[i + 1][1]}
-            break
+    # 如果没找到匹配的帧，记录失败原因并返回false
+    if not found_matching_frame:
+        debug_info['failure_reason'] = "未找到与篮球数据匹配的篮筐帧"
+        return False
     
+
+    # 如果没找到同一帧的above_point，记录失败原因并返回false
+    if above_point is None:
+        debug_info['failure_reason'] = "未找到与篮筐同一帧的above_point数据"
+        return False
+    
+    # 如果没找到同一帧的below_point，记录失败原因并返回false
+    if below_point is None:
+        debug_info['failure_reason'] = "未找到与篮筐同一帧的below_point数据"
+        return False
+
     debug_info['key_points'] = {
         'above_rim_point': above_point,
         'below_rim_point': below_point
@@ -68,10 +115,54 @@ def score(ball_pos, hoop_pos, debug_info=None):
         return False
 
     # Create line from two points
+    # m, b = np.polyfit(x, y, 1)
+    # average_hoop_pos = None
+    
+    # predicted_x = ((average_hoop_pos[0][1] - 0.5 * average_hoop_pos[3]) - b) / m
+    # rim_x1 = average_hoop_pos[0][0] - 0.4 * average_hoop_pos[2]
+    # rim_x2 = average_hoop_pos[0][0] + 0.4 * average_hoop_pos[2]
+
+    # Create line from two points
     m, b = np.polyfit(x, y, 1)
-    predicted_x = ((hoop_pos[-1][0][1] - 0.5 * hoop_pos[-1][3]) - b) / m
-    rim_x1 = hoop_pos[-1][0][0] - 0.4 * hoop_pos[-1][2]
-    rim_x2 = hoop_pos[-1][0][0] + 0.4 * hoop_pos[-1][2]
+    
+    # Calculate average hoop position based on above and below hoop positions
+    average_hoop_pos = None
+    if above_hoop_pos is not None and below_hoop_pos is not None:
+        # Calculate center distance between above and below hoop positions
+        center_x1, center_y1 = above_hoop_pos[0][0], above_hoop_pos[0][1]
+        center_x2, center_y2 = below_hoop_pos[0][0], below_hoop_pos[0][1]
+        
+        distance = math.sqrt((center_x2 - center_x1)**2 + (center_y2 - center_y1)**2)
+        
+        # If distance is less than 5, calculate average position
+        if distance < 5:
+            avg_center_x = (center_x1 + center_x2) / 2
+            avg_center_y = (center_y1 + center_y2) / 2
+            avg_width = (above_hoop_pos[2] + below_hoop_pos[2]) / 2
+            avg_height = (above_hoop_pos[3] + below_hoop_pos[3]) / 2
+            
+            # Use the frame from the hoop position (should be the same for both)
+            frame = above_hoop_pos[1]
+            
+            # Create average hoop position
+            average_hoop_pos = (np.array([avg_center_x, avg_center_y]), frame, avg_width, avg_height, above_hoop_pos[4])
+        else:
+            # If distance >= 5, use the latest hoop position (closest frame to current)
+            average_hoop_pos = below_hoop_pos
+    else:
+        # Fallback to whichever hoop position is available
+        if above_hoop_pos is not None:
+            average_hoop_pos = above_hoop_pos
+        elif below_hoop_pos is not None:
+            average_hoop_pos = below_hoop_pos
+        else:
+            # This should not happen based on the validation above
+            debug_info['failure_reason'] = "No hoop position available for calculation"
+            return False
+    
+    predicted_x = ((average_hoop_pos[0][1] - 0.5 * average_hoop_pos[3]) - b) / m
+    rim_x1 = average_hoop_pos[0][0] - 0.4 * average_hoop_pos[2]
+    rim_x2 = average_hoop_pos[0][0] + 0.4 * average_hoop_pos[2]
     
     # Record trajectory line and prediction information
     debug_info['trajectory_line'] = {
@@ -104,7 +195,7 @@ def score(ball_pos, hoop_pos, debug_info=None):
     debug_info['shot_analysis'] = {
         'is_direct_hit': bool(is_direct_hit),
         'is_rebound_hit': bool(is_rebound_hit),
-        'horizontal_distance_from_center': float(predicted_x - hoop_pos[-1][0][0]),
+        'horizontal_distance_from_center': float(predicted_x - average_hoop_pos[0][0]),
         'horizontal_distance_from_left_rim': float(predicted_x - rim_x1),
         'horizontal_distance_from_right_rim': float(rim_x2 - predicted_x)
     }
