@@ -8,6 +8,14 @@ import numpy as np
 import json
 import time
 from tqdm import tqdm
+# Try to import PySceneDetect - if not available, we'll handle it gracefully
+try:
+    from scenedetect import detect, ContentDetector
+    SCENE_DETECTION_AVAILABLE = True
+except ImportError:
+    SCENE_DETECTION_AVAILABLE = False
+    print("Warning: PySceneDetect not available. Scene change detection will be disabled.")
+
 from utils import score, detect_down, detect_up, in_hoop_region, clean_hoop_pos, select_ball, get_device
 from datetime import datetime
 import os
@@ -26,11 +34,17 @@ class ShotLogger:
         self._first_frame_logged = False  # Add missing attribute
         self.output_dir = None  # Store output directory
         self.model_name = None  # Store model name for consistent naming
+        # Store scene change detection results
+        self.scene_changes = []
         
     def set_output_info(self, output_dir, model_name):
         """Set output directory and model name for consistent log naming"""
         self.output_dir = output_dir
         self.model_name = model_name
+        
+    def log_scene_changes(self, scene_changes):
+        """Log scene change detection results"""
+        self.scene_changes = scene_changes
         
     def log_shot(self, frame_idx, timestamp, ball_pos, hoop_pos, ball_confidence, is_successful, debug_info=None):
         """
@@ -102,6 +116,7 @@ class ShotLogger:
             "success_rate": round(self.success_count / self.total_attempts * 100, 2) if self.total_attempts > 0 else 0,
             "processing_time_seconds": round(time.time() - self.start_time, 2),
             "ball_threshold": self.ball_threshold,
+            "scene_changes": self.scene_changes,  # Add scene changes to stats
             "shots": clean_shots
         }
         with open(filename, 'w') as f:
@@ -337,6 +352,12 @@ class ShotDetector:
         self.fade_counter = 0
         self.overlay_color = (0, 0, 0)
 
+        # Scene change detection using PySceneDetect
+        self.scene_changes = []
+        self.next_scene_frame = None
+        self.scene_change_threshold = 40.0  # Default threshold for scene change detection
+        self._detect_scene_changes()
+        
         # Setup video writer if output path is provided
         if output_video:
             # Get video properties
@@ -362,6 +383,45 @@ class ShotDetector:
         print(f"Model: {self.model_path}")
         print(f"Class names: {self.class_names}")
             
+    def _detect_scene_changes(self):
+        """
+        Detect scene changes in the video using PySceneDetect
+        """
+        if not SCENE_DETECTION_AVAILABLE:
+            print("PySceneDetect not available. Skipping scene change detection.")
+            return
+            
+        try:
+            # Detect scene changes using ContentDetector with a specific threshold
+            scene_list = detect(self.input_video, ContentDetector(threshold=self.scene_change_threshold))
+            
+            # Convert scene boundaries to frame numbers
+            scene_frames = []
+            for scene_start, scene_end in scene_list:
+                # We want to trigger shot detection before the scene change
+                # So we use the frame just before the scene change
+                scene_frame = scene_start.get_frames() - 1
+                # Skip first and last frames as requested
+                if scene_frame > 0 and scene_frame < self.total_frames - 1:
+                    scene_frames.append(scene_frame)
+            
+            self.scene_changes = scene_frames
+            self.logger.log_scene_changes([{
+                "frame": frame,
+                "confidence": self.scene_change_threshold  # Using threshold as confidence measure
+            } for frame in scene_frames])
+            
+            if scene_frames:
+                self.next_scene_frame = scene_frames[0]
+            else:
+                self.next_scene_frame = None
+                
+            print(f"Detected {len(scene_frames)} scene changes at frames: {scene_frames} (threshold: {self.scene_change_threshold})")
+        except Exception as e:
+            print(f"Error detecting scene changes: {e}")
+            self.scene_changes = []
+            self.next_scene_frame = None
+
     def run(self):
         # Progress bar
         progress_bar = tqdm(total=self.total_frames, desc="Processing Video", unit="frame")
@@ -457,21 +517,8 @@ class ShotDetector:
             self.clean_motion()
             self.shot_detection()
             self.display_score()
-            self.frame_count += 1
-            self.logger.frame_count = self.frame_count
-            self.logger.update_progress(self.frame_count, self.total_frames)
-            progress_bar.update(1)
-
-            # Write frame to output video if specified
-            if self.video_writer:
-                self.video_writer.write(self.frame)
-            else:
-                cv2.imshow('Frame', self.frame)
-                # Close if 'q' is clicked
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-
-            # Log frame data after processing
+            
+            # Log frame data before incrementing frame count
             all_balls = self.ball_pos if hasattr(self, 'ball_pos') else []
             all_hoops = self.hoop_pos if hasattr(self, 'hoop_pos') else []
             
@@ -488,6 +535,21 @@ class ShotDetector:
                 current_frame_balls,
                 current_frame_hoops
             )
+            
+            # Increment frame count after logging
+            self.frame_count += 1
+            self.logger.frame_count = self.frame_count
+            self.logger.update_progress(self.frame_count, self.total_frames)
+            progress_bar.update(1)
+
+            # Write frame to output video if specified
+            if self.video_writer:
+                self.video_writer.write(self.frame)
+            else:
+                cv2.imshow('Frame', self.frame)
+                # Close if 'q' is clicked
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
 
         progress_bar.close()
         self.cap.release()
@@ -509,7 +571,7 @@ class ShotDetector:
 
     def draw_detections(self, current_frame_balls, selected_ball, current_frame_hoops):
         """Draw all detected objects with appropriate colors and labels"""
-        # Object type configuration
+        # Object type configuration with enhanced visibility
         obj_configs = {
             'ball': {
                 'color': (0, 255, 0),  # Green
@@ -517,7 +579,7 @@ class ShotDetector:
                 'label': 'Ball'
             },
             'selected_ball': {
-                'color': (255, 0, 0),  # Blue
+                'color': (255, 0, 0),  # Red for selected ball
                 'label': 'Selected Ball'
             },
             'hoop': {
@@ -538,35 +600,54 @@ class ShotDetector:
             else:
                 config = obj_configs['ball']
             
-            # Draw the detection box and label
-            cvzone.cornerRect(self.frame, (x1, y1, w, h), colorR=config['color'], colorC=config['color'])
-            cv2.putText(self.frame, f'{config["label"]} {conf}', (x1, y1 - 10), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, config['color'], 2)
-        
+            # Draw the detection box with thicker lines for better visibility
+            cvzone.cornerRect(self.frame, (x1, y1, w, h), 
+                             colorR=config['color'], 
+                             colorC=config['color'],
+                             t=3,     # Thickness of the rectangle
+                             rt=2)    # Thickness of corner rectangles
+            
+            # Draw label with background for better readability
+            label = f'{config["label"]} {conf:.2f}'
+            cv2.rectangle(self.frame, (x1, y1 - 20), (x1 + len(label) * 10, y1), config['color'], -1)
+            cv2.putText(self.frame, label, (x1, y1 - 5), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
         # Draw all hoops 
         for hoop in current_frame_hoops:
             x1, y1 = hoop['bbox'][0], hoop['bbox'][1]
             w, h = hoop['size']['width'], hoop['size']['height']
             conf = hoop['confidence']
             
-            # Draw the detection box and label
+            # Draw the detection box with thicker lines for better visibility
             cvzone.cornerRect(self.frame, (x1, y1, w, h), 
                              colorR=obj_configs['hoop']['color'], 
-                             colorC=obj_configs['hoop']['color'])
-            cv2.putText(self.frame, f'{obj_configs["hoop"]["label"]} {conf}', 
-                       (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 
-                       obj_configs['hoop']['color'], 2)
+                             colorC=obj_configs['hoop']['color'],
+                             t=3,     # Thickness of the rectangle
+                             rt=2)    # Thickness of corner rectangles
+            
+            # Draw label with background for better readability
+            label = f'{obj_configs["hoop"]["label"]} {conf:.2f}'
+            cv2.rectangle(self.frame, (x1, y1 - 20), (x1 + len(label) * 10, y1), obj_configs['hoop']['color'], -1)
+            cv2.putText(self.frame, label, (x1, y1 - 5), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
     def clean_motion(self):
+        # Draw ball trajectory with enhanced visibility
         for i in range(0, len(self.ball_pos)):
-            cv2.circle(self.frame, self.ball_pos[i][0], 2, (0, 0, 255), 2)
+            cv2.circle(self.frame, self.ball_pos[i][0], 3, (0, 0, 255), -1)  # Filled circles
+            # Add a border for better visibility
+            cv2.circle(self.frame, self.ball_pos[i][0], 4, (255, 255, 255), 2)
 
         # Clean hoop motion and display current hoop center
         if len(self.hoop_pos) > 1:
             self.hoop_pos = clean_hoop_pos(self.hoop_pos)
         # Only draw hoop position if we have at least one position
         if len(self.hoop_pos) > 0:
-            cv2.circle(self.frame, self.hoop_pos[-1][0], 2, (128, 128, 0), 2)
+            # Draw hoop position with enhanced visibility
+            cv2.circle(self.frame, self.hoop_pos[-1][0], 3, (128, 128, 0), -1)  # Filled circle
+            # Add a border for better visibility
+            cv2.circle(self.frame, self.hoop_pos[-1][0], 4, (255, 255, 255), 2)
 
     def shot_detection(self):
         if len(self.hoop_pos) > 0 and len(self.ball_pos) > 0:
@@ -583,81 +664,117 @@ class ShotDetector:
                     self.down_frame = self.ball_pos[-1][1]
                     self.down_hoop_frame = self.hoop_pos[-1][1]
 
-            # If ball goes from 'up' area to 'down' area in that order, increase attempt and reset
+            # Check if we need to perform shot detection
+            should_detect_shot = False
+            scene_change_triggered = False
+            
+            # Regular 10-frame interval check
             if self.frame_count % 10 == 0:
-                if self.up and self.down and self.up_frame < self.down_frame:
-                    self.attempts += 1
-                    self.up = False
-                    self.down = False
+                should_detect_shot = True
+                
+            # Check for scene change - perform shot detection before the scene change
+            if (self.next_scene_frame is not None and 
+                self.frame_count >= self.next_scene_frame):
+                should_detect_shot = True
+                scene_change_triggered = True
+                
+                # Move to next scene change frame
+                # Remove current scene frame from the list
+                if self.scene_changes:
+                    self.scene_changes.pop(0)
+                    self.next_scene_frame = self.scene_changes[0] if self.scene_changes else None
 
-                    # Create debug info dictionary
-                    debug_info = {}
-                    
-                    # Add more context information to debug dictionary
-                    debug_info['shot_context'] = {
-                        'up_frame': self.up_frame,
-                        'up_hoop_frame': self.up_hoop_frame,
-                        'down_frame': self.down_frame,
-                        'down_hoop_frame': self.down_hoop_frame,
-                        'frames_between_up_down': self.down_frame - self.up_frame,
-                        'total_ball_positions': len(self.ball_pos),
-                        'total_hoop_positions': len(self.hoop_pos)
-                    }
-                    
-                    # Add detailed ball and hoop tracking data for each frame
-                    ball_tracking_data = []
-                    for pos in self.ball_pos:
-                        ball_tracking_data.append({
-                            'frame': pos[1],
-                            'position': {'x': pos[0][0], 'y': pos[0][1]},
-                            'size': {'width': pos[2], 'height': pos[3]},
-                            'confidence': float(pos[4])
-                        })
-                    
-                    hoop_tracking_data = []
-                    for pos in self.hoop_pos:
-                        hoop_tracking_data.append({
-                            'frame': pos[1],
-                            'position': {'x': pos[0][0], 'y': pos[0][1]},
-                            'size': {'width': pos[2], 'height': pos[3]},
-                            'confidence': float(pos[4])
-                        })
-                    
-                    debug_info['ball_tracking'] = ball_tracking_data
-                    debug_info['hoop_tracking'] = hoop_tracking_data
-                    
-                    # Check if it's a make or miss with debug info
-                    is_successful = score(self.ball_pos, self.hoop_pos, debug_info)
-                    timestamp = self.frame_count / 30  # assuming 30fps
-                    
-                    # Log shot (both makes and misses) with debug info
-                    self.logger.log_shot(
-                        frame_idx=self.frame_count,
-                        timestamp=timestamp,
-                        ball_pos=self.ball_pos[-1][0],
-                        hoop_pos=self.hoop_pos[-1][0],
-                        ball_confidence=self.ball_pos[-1][4],  # Use actual ball confidence
-                        is_successful=is_successful,
-                        debug_info=debug_info
-                    )
-                    
-                    # Clear trajectory data to prevent data pollution in subsequent shot detections
-                    self.ball_pos.clear()
-                    self.hoop_pos.clear()
-                    
-                    if is_successful:
-                        self.makes += 1
-                        self.overlay_color = (0, 255, 0)  # Green for make
-                        self.overlay_text = "Make"
-                        self.fade_counter = self.fade_frames
-                    else:
-                        self.overlay_color = (255, 0, 0)  # Red for miss
-                        self.overlay_text = "Miss"
-                        self.fade_counter = self.fade_frames
+            # If ball goes from 'up' area to 'down' area in that order, increase attempt and reset
+            if self.up and self.down and self.up_frame < self.down_frame and should_detect_shot:
+                self.attempts += 1
+                self.up = False
+                self.down = False
 
+                # Create debug info dictionary
+                debug_info = {}
+                
+                # Add more context information to debug dictionary
+                debug_info['shot_context'] = {
+                    'up_frame': self.up_frame,
+                    'up_hoop_frame': self.up_hoop_frame,
+                    'down_frame': self.down_frame,
+                    'down_hoop_frame': self.down_hoop_frame,
+                    'frames_between_up_down': self.down_frame - self.up_frame,
+                    'total_ball_positions': len(self.ball_pos),
+                    'total_hoop_positions': len(self.hoop_pos),
+                    'scene_change_triggered': scene_change_triggered
+                }
+                
+                # Add detailed ball and hoop tracking data for each frame
+                ball_tracking_data = []
+                for pos in self.ball_pos:
+                    ball_tracking_data.append({
+                        'frame': pos[1],
+                        'position': {'x': pos[0][0], 'y': pos[0][1]},
+                        'size': {'width': pos[2], 'height': pos[3]},
+                        'confidence': float(pos[4])
+                    })
+                
+                hoop_tracking_data = []
+                for pos in self.hoop_pos:
+                    hoop_tracking_data.append({
+                        'frame': pos[1],
+                        'position': {'x': pos[0][0], 'y': pos[0][1]},
+                        'size': {'width': pos[2], 'height': pos[3]},
+                        'confidence': float(pos[4])
+                    })
+                
+                debug_info['ball_tracking'] = ball_tracking_data
+                debug_info['hoop_tracking'] = hoop_tracking_data
+                
+                # Check if it's a make or miss with debug info
+                is_successful = score(self.ball_pos, self.hoop_pos, debug_info)
+                timestamp = self.frame_count / 30  # assuming 30fps
+                
+                # Log shot (both makes and misses) with debug info
+                self.logger.log_shot(
+                    frame_idx=self.frame_count,
+                    timestamp=timestamp,
+                    ball_pos=self.ball_pos[-1][0],
+                    hoop_pos=self.hoop_pos[-1][0],
+                    ball_confidence=self.ball_pos[-1][4],  # Use actual ball confidence
+                    is_successful=is_successful,
+                    debug_info=debug_info
+                )
+                
+                # Clear trajectory data to prevent data pollution in subsequent shot detections
+                self.ball_pos.clear()
+                self.hoop_pos.clear()
+                
+                if is_successful:
+                    self.makes += 1
+                    self.overlay_color = (0, 255, 0)  # Green for make
+                    self.overlay_text = "Make"
+                    self.fade_counter = self.fade_frames
+                else:
+                    self.overlay_color = (255, 0, 0)  # Red for miss
+                    self.overlay_text = "Miss"
+                    self.fade_counter = self.fade_frames
+            # If this was triggered by a scene change, reset all tracking data regardless of shot detection
+            # if scene_change_triggered:
+            #     # Clear trajectory data to prevent data pollution in subsequent shot detections
+            #     self.ball_pos.clear()
+            #     self.hoop_pos.clear()
+                
+            #     # Reset all tracking data for fresh start after scene change
+            #     self.up = False
+            #     self.down = False
+            #     self.up_frame = 0
+            #     self.down_frame = 0
+            #     self.up_hoop_frame = 0
+            #     self.down_hoop_frame = 0
     def display_score(self):
-        # Add text
+        # Add text with better visibility
         text = str(self.makes) + " / " + str(self.attempts)
+        # Draw background rectangle for better contrast
+        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 3, 6)[0]
+        cv2.rectangle(self.frame, (45, 130 - text_size[1]), (45 + text_size[0], 135), (0, 0, 0), -1)
+        
         cv2.putText(self.frame, text, (50, 125), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 255, 255), 6)
         cv2.putText(self.frame, text, (50, 125), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 0, 0), 3)
 
@@ -668,9 +785,14 @@ class ShotDetector:
             text_x = self.frame.shape[1] - text_width - 40  # Right alignment with some margin
             text_y = 100  # Top margin
 
-            # Display overlay text with color (overlay_color)
+            # Display overlay text with color (overlay_color) and better visibility
+            # Draw background for the overlay text
+            cv2.rectangle(self.frame, (text_x - 5, text_y - text_height - 5), 
+                         (text_x + text_width + 5, text_y + 5), (0, 0, 0), -1)
             cv2.putText(self.frame, self.overlay_text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 3,
-                        self.overlay_color, 6)
+                        (255, 255, 255), 6)
+            cv2.putText(self.frame, self.overlay_text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 3,
+                        self.overlay_color, 3)
 
         # Gradually fade out color after shot
         if self.fade_counter > 0:
