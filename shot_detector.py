@@ -46,6 +46,32 @@ class ShotLogger:
         self.output_dir = output_dir
         self.model_name = model_name
         
+        # Create debug log file immediately after setting output info
+        try:
+            # Create debug log filename based on input video
+            video_name = os.path.splitext(os.path.basename(self.input_video))[0]
+            timestamp = self.start_datetime.strftime('%Y-%m-%d_%H-%M-%S')
+            
+            # Use consistent naming with model name if available
+            if self.output_dir and self.model_name:
+                debug_filename = os.path.join(self.output_dir, f"{video_name}_{self.model_name}_debug_{timestamp}.txt")
+            else:
+                debug_filename = f"{video_name}_debug_{timestamp}.txt"
+                
+            # Create output directory if it doesn't exist
+            if self.output_dir:
+                os.makedirs(self.output_dir, exist_ok=True)
+                
+            # Create the debug log file
+            self._debug_log_file = open(debug_filename, 'w')
+            
+            # Add initial test message to verify logging is working
+            self.debug_log("Debug logging initialized successfully")
+            
+        except Exception as e:
+            print(f"Error creating debug log file: {e}")
+            self._debug_log_file = None
+    
     def log_scene_changes(self, scene_changes):
         """Log scene change detection results"""
         self.scene_changes = scene_changes
@@ -302,43 +328,36 @@ class ShotLogger:
         Args:
             message: Debug message to log (string or dict)
         """
-        # Create debug log file if it doesn't exist
+        # Check if debug log file exists
         if not self._debug_log_file:
-            # Create debug log filename based on input video
-            video_name = os.path.splitext(os.path.basename(self.input_video))[0]
-            timestamp = self.start_datetime.strftime('%Y-%m-%d_%H-%M-%S')
+            print("Debug log file not available. Message not logged:", message)
+            return
             
-            # Use consistent naming with model name if available
-            if self.output_dir and self.model_name:
-                debug_filename = os.path.join(self.output_dir, f"{video_name}_{self.model_name}_debug_{timestamp}.txt")
+        try:
+            # Write debug entry to file with timestamp
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]  # Include milliseconds
+            if isinstance(message, dict):
+                # Convert dict to string for txt format
+                message_str = json.dumps(message, indent=2)
             else:
-                debug_filename = f"{video_name}_debug_{timestamp}.txt"
+                message_str = str(message)
                 
-            # Create output directory if it doesn't exist
-            if self.output_dir:
-                os.makedirs(self.output_dir, exist_ok=True)
-                
-            self._debug_log_file = open(debug_filename, 'w')
-        
-        # Write debug entry to file with timestamp
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]  # Include milliseconds
-        if isinstance(message, dict):
-            # Convert dict to string for txt format
-            message_str = json.dumps(message, indent=2)
-        else:
-            message_str = str(message)
+            self._debug_log_file.write(f"[{timestamp}] {message_str}\n")
             
-        self._debug_log_file.write(f"[{timestamp}] {message_str}\n")
-        
-        # Flush to ensure data is written
-        self._debug_log_file.flush()
+            # Flush to ensure data is written
+            self._debug_log_file.flush()
+        except Exception as e:
+            print(f"Error writing to debug log: {e}")
         
     def close_debug_log(self):
         """
         Close debug log file if it exists
         """
         if self._debug_log_file:
-            self._debug_log_file.close()
+            try:
+                self._debug_log_file.close()
+            except Exception as e:
+                print(f"Error closing debug log file: {e}")
             self._debug_log_file = None
 class ShotDetector:
     def __init__(self, input_video="video_test_5.mp4", output_video=None, model_path="best.pt", 
