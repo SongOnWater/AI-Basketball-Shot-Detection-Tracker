@@ -521,22 +521,7 @@ class ShotDetector:
         
         # Log initialization info
         self.logger.debug_log(f"Model class names: {self.class_names}")
-        self.logger.debug_log(f"ShotDetector initialized with model: {self.model_path}")
-        
-        # Detect scene changes if PySceneDetect is available
-        if SCENE_DETECTION_AVAILABLE:
-            try:
-                scene_list = detect(self.input_video, ContentDetector(threshold=40.0))
-                self.scene_changes = [scene[0].get_frames() for scene in scene_list]
-                self.logger.log_scene_changes(self.scene_changes)
-                self.logger.debug_log(f"Detected {len(self.scene_changes)} scene changes at frames: {self.scene_changes} (threshold: 40.0)")
-            except Exception as e:
-                self.logger.debug_log(f"Scene detection failed: {str(e)}")
-                self.scene_changes = []
-        else:
-            self.logger.debug_log("PySceneDetect not available, scene change detection disabled")
-            self.scene_changes = []
-        
+        self.logger.debug_log(f"ShotDetector initialized with model: {self.model_path}")   
         # Progress bar
         progress_bar = tqdm(total=self.total_frames, desc="Processing Video", unit="frame")
         
