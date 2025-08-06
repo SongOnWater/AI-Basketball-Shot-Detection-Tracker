@@ -8,6 +8,7 @@ import numpy as np
 import json
 import time
 from tqdm import tqdm
+import torch
 # Try to import PySceneDetect - if not available, we'll handle it gracefully
 try:
     from scenedetect import detect, ContentDetector
@@ -36,6 +37,9 @@ class ShotLogger:
         self.model_name = None  # Store model name for consistent naming
         # Store scene change detection results
         self.scene_changes = []
+        # Debug log file
+        self._debug_log_file = None
+        self._debug_log_first_entry = False
         
     def set_output_info(self, output_dir, model_name):
         """Set output directory and model name for consistent log naming"""
@@ -125,6 +129,9 @@ class ShotLogger:
         # Generate detailed debug log
         self.save_debug_log(filename)
         
+        # Close debug log file if it exists
+        self.close_debug_log()
+        
         return filename
         
     def log_frame_data(self, frame_count, all_balls, all_hoops, selected_ball_idx=-1, selected_hoop_idx=-1,
@@ -151,7 +158,7 @@ class ShotLogger:
             if self.output_dir and self.model_name:
                 frame_filename = os.path.join(self.output_dir, f"{video_name}_{self.model_name}_frame_{timestamp}.json")
             else:
-                frame_filename = f"{video_name}_frame_{timestamp}.json"
+                frame_filename = f"{video_name}_frame_log_{timestamp}.json"
                 
             self._debug_file = open(frame_filename, 'w')
             self._debug_file.write('[')  # Start JSON array
@@ -214,10 +221,10 @@ class ShotLogger:
         if "_shot_" in base_name:
             # Split on "_shot_" and take the first part
             parts = base_name.split("_shot_")
-            debug_log_path = f"{parts[0]}.json"
+            debug_log_path = f"{parts[0]}_debug.json"
         else:
             # Fallback: just remove "_shot" if present
-            debug_log_path = base_name.replace("_shot", "") + ".json"
+            debug_log_path = base_name.replace("_shot", "") + "_debug.json"
         
         # Read the existing shot log
         try:
@@ -288,14 +295,62 @@ class ShotLogger:
         print(f"Shot log with details saved to {shot_log_path}")
         return shot_log_path
 
+    def debug_log(self, message):
+        """
+        Log debug message to debug log file with consistent naming
+        
+        Args:
+            message: Debug message to log (string or dict)
+        """
+        # Create debug log file if it doesn't exist
+        if not self._debug_log_file:
+            # Create debug log filename based on input video
+            video_name = os.path.splitext(os.path.basename(self.input_video))[0]
+            timestamp = self.start_datetime.strftime('%Y-%m-%d_%H-%M-%S')
+            
+            # Use consistent naming with model name if available
+            if self.output_dir and self.model_name:
+                debug_filename = os.path.join(self.output_dir, f"{video_name}_{self.model_name}_debug_{timestamp}.txt")
+            else:
+                debug_filename = f"{video_name}_debug_{timestamp}.txt"
+                
+            # Create output directory if it doesn't exist
+            if self.output_dir:
+                os.makedirs(self.output_dir, exist_ok=True)
+                
+            self._debug_log_file = open(debug_filename, 'w')
+        
+        # Write debug entry to file with timestamp
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]  # Include milliseconds
+        if isinstance(message, dict):
+            # Convert dict to string for txt format
+            message_str = json.dumps(message, indent=2)
+        else:
+            message_str = str(message)
+            
+        self._debug_log_file.write(f"[{timestamp}] {message_str}\n")
+        
+        # Flush to ensure data is written
+        self._debug_log_file.flush()
+        
+    def close_debug_log(self):
+        """
+        Close debug log file if it exists
+        """
+        if self._debug_log_file:
+            self._debug_log_file.close()
+            self._debug_log_file = None
 class ShotDetector:
     def __init__(self, input_video="video_test_5.mp4", output_video=None, model_path="best.pt", 
                  ball_model_path=None, hoop_model_path=None, person_model_path=None, use_shared_model=True, 
                  min_ball_area=400, enable_person_detection=False, model_config=None, debug_log_path=None, 
-                 output_dir=None):
+                 output_dir=None, ball_conf_threshold=0.5):
         # For compatibility with batch_test_evaluator.py
         # Use ball_model_path if provided, otherwise fall back to model_path
         actual_model_path = ball_model_path if ball_model_path else model_path
+        
+        # Initialize logger first
+        self.logger = ShotLogger(input_video, ball_conf_threshold)
         
         # Load the YOLO model created from main.py - change text to your relative path
         self.overlay_text = "Waiting..."
@@ -306,21 +361,33 @@ class ShotDetector:
         self.input_video = input_video
         self.output_dir = output_dir  # Store output directory
         
+        # Set device based on CUDA availability
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        try:
+            self.model.to(self.device)
+        except Exception as e:
+            print(f"Warning: Could not move model to {self.device}: {e}")
+            self.device = 'cpu'
+            self.model.to(self.device)
+        
         # Set up debug log path
         self.debug_log_path = debug_log_path or os.path.join('logs', 'console_output.log')
-        os.makedirs(os.path.dirname(self.debug_log_path), exist_ok=True)
         
-        # Set up class names based on the model
+        # Pass output directory and model name to logger for consistent naming
+        model_name = os.path.splitext(os.path.basename(actual_model_path))[0]
+        self.logger.set_output_info(output_dir, model_name)
+        
+        # Setup class names
         self.setup_class_names()
         
-        # Create logger after setting up debug_log_path
-        self.logger = ShotLogger(input_video=self.input_video)
-        # Set output directory and model name for consistent log naming
-        model_name = os.path.splitext(os.path.basename(self.model_path))[0] if self.model_path else "default"
-        self.logger.set_output_info(self.output_dir, model_name)
+        # Log initialization
+        self.logger.debug_log(f"ShotDetector initialized with model: {actual_model_path}")
         
         # Uncomment this line to accelerate inference. Note that this may cause errors in some setups.
         #self.model.half()
+        
+        # Set device based on availability
+        self.device = get_device()
         
         self.device = get_device()
         # Uncomment line below to use webcam (I streamed to my iPhone using Iriun Webcam)
@@ -329,6 +396,9 @@ class ShotDetector:
         # Use video from input parameter
         self.cap = cv2.VideoCapture(input_video)
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        # Log video info
+        self.logger.debug_log(f"Video loaded: {input_video}, Total frames: {self.total_frames}")
 
         self.ball_pos = []  # array of tuples ((x_pos, y_pos), frame count, width, height, conf)
         self.hoop_pos = []  # array of tuples ((x_pos, y_pos), frame count, width, height, conf)
@@ -382,6 +452,7 @@ class ShotDetector:
         
         print(f"Model: {self.model_path}")
         print(f"Class names: {self.class_names}")
+        self.logger.debug_log(f"Model class names: {self.class_names}")
             
     def _detect_scene_changes(self):
         """
@@ -389,6 +460,7 @@ class ShotDetector:
         """
         if not SCENE_DETECTION_AVAILABLE:
             print("PySceneDetect not available. Skipping scene change detection.")
+            self.logger.debug_log("PySceneDetect not available. Skipping scene change detection.")
             return
             
         try:
@@ -417,33 +489,64 @@ class ShotDetector:
                 self.next_scene_frame = None
                 
             print(f"Detected {len(scene_frames)} scene changes at frames: {scene_frames} (threshold: {self.scene_change_threshold})")
+            self.logger.debug_log(f"Detected {len(scene_frames)} scene changes at frames: {scene_frames} (threshold: {self.scene_change_threshold})")
         except Exception as e:
             print(f"Error detecting scene changes: {e}")
+            self.logger.debug_log(f"Error detecting scene changes: {e}")
             self.scene_changes = []
             self.next_scene_frame = None
 
     def run(self):
+        self.cap = cv2.VideoCapture(self.input_video)
+        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        # Log initialization info
+        self.logger.debug_log(f"Model class names: {self.class_names}")
+        self.logger.debug_log(f"ShotDetector initialized with model: {self.model_path}")
+        
+        # Detect scene changes if PySceneDetect is available
+        if SCENE_DETECTION_AVAILABLE:
+            try:
+                scene_list = detect(self.input_video, ContentDetector(threshold=40.0))
+                self.scene_changes = [scene[0].get_frames() for scene in scene_list]
+                self.logger.log_scene_changes(self.scene_changes)
+                self.logger.debug_log(f"Detected {len(self.scene_changes)} scene changes at frames: {self.scene_changes} (threshold: 40.0)")
+            except Exception as e:
+                self.logger.debug_log(f"Scene detection failed: {str(e)}")
+                self.scene_changes = []
+        else:
+            self.logger.debug_log("PySceneDetect not available, scene change detection disabled")
+            self.scene_changes = []
+        
         # Progress bar
         progress_bar = tqdm(total=self.total_frames, desc="Processing Video", unit="frame")
         
-        # Create output directory if not exists
-        if self.logger.output_dir:
-            os.makedirs(self.logger.output_dir, exist_ok=True)
+        # Create output directory if it doesn't exist
+        if self.output_dir:
+            os.makedirs(self.output_dir, exist_ok=True)
             
-        # Create frame log file with consistent naming and .json extension
-        video_name = os.path.splitext(os.path.basename(self.input_video))[0]
-        timestamp = self.logger.start_datetime.strftime('%Y-%m-%d_%H-%M-%S')
+        # Process video with YOLO model
+        # Use CUDA if available, otherwise use CPU
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.logger.debug_log(f"Using device: {device}")
+        try:
+            results = self.model(
+                self.input_video, 
+                stream=True, 
+                device=device,  # Use CUDA if available, otherwise CPU
+                verbose=False  # Reduce verbose output
+            )
+        except NotImplementedError as e:
+            # Fallback to CPU if CUDA is not supported for some operations
+            self.logger.debug_log(f"CUDA not supported for this operation, falling back to CPU: {str(e)}")
+            device = 'cpu'
+            results = self.model(
+                self.input_video, 
+                stream=True, 
+                device=device,  # Force CPU as fallback
+                verbose=False  # Reduce verbose output
+            )
         
-        # Generate consistent naming for frame log with model name and .json extension
-        if self.logger.model_name:
-            frame_log_filename = f"{video_name}_{self.logger.model_name}_frame_{timestamp}.json"
-        else:
-            frame_log_filename = f"{video_name}_frame_log_{timestamp}.json"
-            
-        frame_log_path = os.path.join(self.logger.output_dir or '.', frame_log_filename)
-        self.logger._debug_file = open(frame_log_path, 'w')
-        self.logger._debug_file.write('[\n')  # Start JSON array
-
         while self.cap.isOpened():
             success, self.frame = self.cap.read()
             if not success:
@@ -514,9 +617,6 @@ class ShotDetector:
             # Draw detected objects
             self.draw_detections(current_frame_balls, selected_ball, current_frame_hoops)
 
-            self.clean_motion()
-            self.shot_detection()
-            self.display_score()
             
             # Log frame data before incrementing frame count
             all_balls = self.ball_pos if hasattr(self, 'ball_pos') else []
@@ -535,6 +635,10 @@ class ShotDetector:
                 current_frame_balls,
                 current_frame_hoops
             )
+
+            self.clean_motion()
+            self.shot_detection()
+            self.display_score()
             
             # Increment frame count after logging
             self.frame_count += 1
@@ -563,11 +667,16 @@ class ShotDetector:
             self.logger._debug_file.write('\n]')  # Close JSON array
             self.logger._debug_file.close()
         
-        # Save shot log after processing completes
-        log_filename = self.logger.save_log()
-        print(f"\nShot log saved to: {log_filename}")
+        # At the end of processing, save the logs
+        shot_log_file = self.logger.save_log()
+        self.logger.debug_log(f"Processing completed. Shot log saved to: {shot_log_file}")
         
-        return log_filename  # Return log filename for batch evaluator
+        # Close all files
+        if self.video_writer:
+            self.video_writer.release()
+        cv2.destroyAllWindows()
+        
+        return shot_log_file  # Return log filename for batch evaluator
 
     def draw_detections(self, current_frame_balls, selected_ball, current_frame_hoops):
         """Draw all detected objects with appropriate colors and labels"""
@@ -650,124 +759,211 @@ class ShotDetector:
             cv2.circle(self.frame, self.hoop_pos[-1][0], 4, (255, 255, 255), 2)
 
     def shot_detection(self):
-        if len(self.hoop_pos) > 0 and len(self.ball_pos) > 0:
-            # Detecting when ball is in 'up' and 'down' area - ball can only be in 'down' area after it is in 'up'
-            if not self.up:
-                self.up = detect_up(self.ball_pos[-1], self.hoop_pos[-1])
-                if self.up:
-                    self.up_frame = self.ball_pos[-1][1]
-                    self.up_hoop_frame = self.hoop_pos[-1][1]
+        """
+        Detect basketball shots based on ball and hoop movement patterns.
+        Records shot attempts and determines success based on ball trajectory.
+        """
+        # Skip if not a detection frame and not at a scene change
+        if (self.frame_count % 10 != 0 and 
+            (self.next_scene_frame is None or self.frame_count < self.next_scene_frame)):
+            return
 
-            if self.up and not self.down:
-                self.down = detect_down(self.ball_pos[-1], self.hoop_pos[-1])
-                if self.down:
-                    self.down_frame = self.ball_pos[-1][1]
-                    self.down_hoop_frame = self.hoop_pos[-1][1]
+        # Log basic frame info
+        self.logger.debug_log({
+            "event": "shot_detection_start",
+            "frame": self.frame_count,
+            "total_balls": len(self.ball_pos),
+            "total_hoops": len(self.hoop_pos),
+            "scene_changes_remaining": len(self.scene_changes) if self.scene_changes else 0,
+            "next_scene_frame": self.next_scene_frame if self.scene_changes else None
+        })
 
-            # Check if we need to perform shot detection
-            should_detect_shot = False
-            scene_change_triggered = False
+        # Detect UP state (ball approaching hoop from below)
+        up = detect_up(self.ball_pos[-1], self.hoop_pos[-1]) if self.ball_pos and self.hoop_pos else False
+        self.logger.debug_log({
+            "event": "up_detection",
+            "frame": self.frame_count,
+            "has_ball": bool(self.ball_pos),
+            "has_hoop": bool(self.hoop_pos),
+            "ball_frame": self.ball_pos[-1][1] if self.ball_pos else None,
+            "hoop_frame": self.hoop_pos[-1][1] if self.hoop_pos else None,
+            "result": up
+        })
+
+        # Update UP state if detection was successful
+        if up:
+            self.up = True
+            self.up_frame = self.ball_pos[-1][1] if self.ball_pos else self.frame_count
+            self.up_hoop_frame = self.hoop_pos[-1][1] if self.hoop_pos else self.frame_count
+            self.logger.debug_log({
+                "event": "up_state_set",
+                "frame": self.frame_count,
+                "up_frame": self.up_frame,
+                "up_hoop_frame": self.up_hoop_frame,
+                "ball_confidence": self.ball_pos[-1][4] if self.ball_pos else None,
+                "hoop_confidence": self.hoop_pos[-1][4] if self.hoop_pos else None
+            })
+
+        # Detect DOWN state (ball passing through hoop area)
+        down = False
+        if self.up:
+            down = detect_down(self.ball_pos[-1], self.hoop_pos[-1]) if self.ball_pos and self.hoop_pos else False
+            self.logger.debug_log({
+                "event": "down_detection",
+                "frame": self.frame_count,
+                "has_ball": bool(self.ball_pos),
+                "has_hoop": bool(self.hoop_pos),
+                "ball_frame": self.ball_pos[-1][1] if self.ball_pos else None,
+                "hoop_frame": self.hoop_pos[-1][1] if self.hoop_pos else None,
+                "result": down
+            })
+
+        # Handle DOWN state
+        if self.up and down:
+            self.down = True
+            self.down_frame = self.ball_pos[-1][1] if self.ball_pos else self.frame_count
+            self.down_hoop_frame = self.hoop_pos[-1][1] if self.hoop_pos else self.frame_count
+            self.logger.debug_log({
+                "event": "down_state_set",
+                "frame": self.frame_count,
+                "down_frame": self.down_frame,
+                "down_hoop_frame": self.down_hoop_frame,
+                "ball_confidence": self.ball_pos[-1][4] if self.ball_pos else None,
+                "hoop_confidence": self.hoop_pos[-1][4] if self.hoop_pos else None
+            })
+
+        # Check if we should perform shot detection
+        should_detect_shot = False
+        scene_change_triggered = False
+        
+        # Regular 10-frame interval check
+        if self.frame_count % 10 == 0:
+            should_detect_shot = True
+            self.logger.debug_log({
+                "event": "regular_shot_detection",
+                "frame": self.frame_count,
+                "triggered": True
+            })
+
+        # Check for scene change - perform shot detection before the scene change
+        if (self.next_scene_frame is not None and self.frame_count >= self.next_scene_frame):
+            should_detect_shot = True
+            scene_change_triggered = True
+            self.logger.debug_log({
+                "event": "scene_change_shot_detection",
+                "frame": self.frame_count,
+                "next_scene_frame": self.next_scene_frame,
+                "triggered": True
+            })
             
-            # Regular 10-frame interval check
-            if self.frame_count % 10 == 0:
-                should_detect_shot = True
-                
-            # Check for scene change - perform shot detection before the scene change
-            if (self.next_scene_frame is not None and 
-                self.frame_count >= self.next_scene_frame):
-                should_detect_shot = True
-                scene_change_triggered = True
-                
-                # Move to next scene change frame
-                # Remove current scene frame from the list
-                if self.scene_changes:
-                    self.scene_changes.pop(0)
-                    self.next_scene_frame = self.scene_changes[0] if self.scene_changes else None
+            # Move to next scene change frame
+            if self.scene_changes:
+                self.scene_changes.pop(0)
+                self.next_scene_frame = self.scene_changes[0] if self.scene_changes else None
 
-            # If ball goes from 'up' area to 'down' area in that order, increase attempt and reset
-            if self.up and self.down and self.up_frame < self.down_frame and should_detect_shot:
-                self.attempts += 1
-                self.up = False
-                self.down = False
+        # If ball goes from 'up' area to 'down' area in that order, increase attempt and reset
+        if self.up and self.down and self.up_frame < self.down_frame and should_detect_shot:
+            self.logger.debug_log({
+                "event": "shot_conditions_met",
+                "frame": self.frame_count,
+                "up": self.up,
+                "down": self.down,
+                "up_frame": self.up_frame,
+                "down_frame": self.down_frame,
+                "should_detect_shot": should_detect_shot,
+                "scene_change_triggered": scene_change_triggered
+            })
+            
+            self.attempts += 1
+            self.up = False
+            self.down = False
 
-                # Create debug info dictionary
-                debug_info = {}
-                
-                # Add more context information to debug dictionary
-                debug_info['shot_context'] = {
-                    'up_frame': self.up_frame,
-                    'up_hoop_frame': self.up_hoop_frame,
-                    'down_frame': self.down_frame,
-                    'down_hoop_frame': self.down_hoop_frame,
-                    'frames_between_up_down': self.down_frame - self.up_frame,
-                    'total_ball_positions': len(self.ball_pos),
-                    'total_hoop_positions': len(self.hoop_pos),
-                    'scene_change_triggered': scene_change_triggered
-                }
-                
-                # Add detailed ball and hoop tracking data for each frame
-                ball_tracking_data = []
-                for pos in self.ball_pos:
-                    ball_tracking_data.append({
-                        'frame': pos[1],
-                        'position': {'x': pos[0][0], 'y': pos[0][1]},
-                        'size': {'width': pos[2], 'height': pos[3]},
-                        'confidence': float(pos[4])
-                    })
-                
-                hoop_tracking_data = []
-                for pos in self.hoop_pos:
-                    hoop_tracking_data.append({
-                        'frame': pos[1],
-                        'position': {'x': pos[0][0], 'y': pos[0][1]},
-                        'size': {'width': pos[2], 'height': pos[3]},
-                        'confidence': float(pos[4])
-                    })
-                
-                debug_info['ball_tracking'] = ball_tracking_data
-                debug_info['hoop_tracking'] = hoop_tracking_data
-                
-                # Check if it's a make or miss with debug info
-                is_successful = score(self.ball_pos, self.hoop_pos, debug_info)
-                timestamp = self.frame_count / 30  # assuming 30fps
-                
-                # Log shot (both makes and misses) with debug info
-                self.logger.log_shot(
-                    frame_idx=self.frame_count,
-                    timestamp=timestamp,
-                    ball_pos=self.ball_pos[-1][0],
-                    hoop_pos=self.hoop_pos[-1][0],
-                    ball_confidence=self.ball_pos[-1][4],  # Use actual ball confidence
-                    is_successful=is_successful,
-                    debug_info=debug_info
-                )
-                
-                # Clear trajectory data to prevent data pollution in subsequent shot detections
-                self.ball_pos.clear()
-                self.hoop_pos.clear()
-                
-                if is_successful:
-                    self.makes += 1
-                    self.overlay_color = (0, 255, 0)  # Green for make
-                    self.overlay_text = "Make"
-                    self.fade_counter = self.fade_frames
-                else:
-                    self.overlay_color = (255, 0, 0)  # Red for miss
-                    self.overlay_text = "Miss"
-                    self.fade_counter = self.fade_frames
-            # If this was triggered by a scene change, reset all tracking data regardless of shot detection
-            # if scene_change_triggered:
-            #     # Clear trajectory data to prevent data pollution in subsequent shot detections
-            #     self.ball_pos.clear()
-            #     self.hoop_pos.clear()
-                
-            #     # Reset all tracking data for fresh start after scene change
-            #     self.up = False
-            #     self.down = False
-            #     self.up_frame = 0
-            #     self.down_frame = 0
-            #     self.up_hoop_frame = 0
-            #     self.down_hoop_frame = 0
+            # Create debug info dictionary
+            debug_info = {
+                "event": "shot_attempt",
+                "frame": self.frame_count,
+                "up_frame": self.up_frame,
+                "up_hoop_frame": self.up_hoop_frame,
+                "down_frame": self.down_frame,
+                "down_hoop_frame": self.down_hoop_frame,
+                "frames_between_up_down": self.down_frame - self.up_frame,
+                "total_ball_positions": len(self.ball_pos),
+                "total_hoop_positions": len(self.hoop_pos),
+                "scene_change_triggered": scene_change_triggered,
+                "ball_positions": [{
+                    "frame": pos[1],
+                    "position": {"x": pos[0][0], "y": pos[0][1]},
+                    "size": {"width": pos[2], "height": pos[3]},
+                    "confidence": float(pos[4])
+                } for pos in self.ball_pos] if self.ball_pos else [],
+                "hoop_positions": [{
+                    "frame": pos[1],
+                    "position": {"x": pos[0][0], "y": pos[0][1]},
+                    "size": {"width": pos[2], "height": pos[3]},
+                    "confidence": float(pos[4])
+                } for pos in self.hoop_pos] if self.hoop_pos else []
+            }
+            
+            # Check if it's a make or miss with debug info
+            is_successful = score(self.ball_pos, self.hoop_pos, debug_info)
+            timestamp = self.frame_count / 30  # assuming 30fps
+            
+            # Log shot (both makes and misses) with debug info
+            self.logger.log_shot(
+                frame_idx=self.frame_count,
+                timestamp=timestamp,
+                ball_pos=self.ball_pos[-1][0] if self.ball_pos else (0, 0),
+                hoop_pos=self.hoop_pos[-1][0] if self.hoop_pos else (0, 0),
+                ball_confidence=self.ball_pos[-1][4] if self.ball_pos else 0.0,
+                is_successful=is_successful,
+                debug_info=debug_info
+            )
+            
+            # Clear trajectory data to prevent data pollution in subsequent shot detections
+            self.ball_pos.clear()
+            self.hoop_pos.clear()
+            
+            if is_successful:
+                self.makes += 1
+                self.overlay_color = (0, 255, 0)  # Green for make
+                self.overlay_text = "Make"
+                self.fade_counter = self.fade_frames
+                self.logger.debug_log({
+                    "event": "successful_shot",
+                    "frame": self.frame_count,
+                    "make_count": self.makes,
+                    "total_attempts": self.attempts
+                })
+            else:
+                self.overlay_color = (255, 0, 0)  # Red for miss
+                self.overlay_text = "Miss"
+                self.fade_counter = self.fade_frames
+                self.logger.debug_log({
+                    "event": "missed_shot",
+                    "frame": self.frame_count,
+                    "miss_count": self.attempts - self.makes,
+                    "total_attempts": self.attempts
+                })
+        
+        # If this was triggered by a scene change, reset all tracking data regardless of shot detection
+        if scene_change_triggered:
+            self.logger.debug_log({
+                "event": "scene_change_reset",
+                "frame": self.frame_count,
+                "scene_change_triggered": scene_change_triggered
+            })
+            
+            # Clear trajectory data to prevent data pollution in subsequent shot detections
+            self.ball_pos.clear()
+            self.hoop_pos.clear()
+            
+            # Reset all tracking data for fresh start after scene change
+            self.up = False
+            self.down = False
+            self.up_frame = 0
+            self.down_frame = 0
+            self.up_hoop_frame = 0
+            self.down_hoop_frame = 0
     def display_score(self):
         # Add text with better visibility
         text = str(self.makes) + " / " + str(self.attempts)

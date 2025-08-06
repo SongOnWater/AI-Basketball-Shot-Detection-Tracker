@@ -231,12 +231,13 @@ def detect_down(ball_data, hoop_data):
     """
     # Check if frame counts match
     if ball_data[1] != hoop_data[1]:
+        #print(f"DEBUG: detect_down - Frame mismatch. Ball frame: {ball_data[1]}, Hoop frame: {hoop_data[1]}")
         return False
         
     y = hoop_data[0][1] + 0.5 * hoop_data[3]
-    if ball_data[0][1] > y:
-        return True
-    return False
+    result = ball_data[0][1] > y
+    #print(f"DEBUG: detect_down - Ball Y: {ball_data[0][1]}, Hoop Y threshold: {y}, Result: {result}")
+    return result
 
 
 # Detects if the ball is around the backboard - used to detect shot attempts
@@ -253,6 +254,7 @@ def detect_up(ball_data, hoop_data):
     """
     # Check if frame counts match
     if ball_data[1] != hoop_data[1]:
+        #print(f"DEBUG: detect_up - Frame mismatch. Ball frame: {ball_data[1]}, Hoop frame: {hoop_data[1]}")
         return False
         
     x1 = hoop_data[0][0] - 4 * hoop_data[2]
@@ -260,9 +262,9 @@ def detect_up(ball_data, hoop_data):
     y1 = hoop_data[0][1] - 2 * hoop_data[3]
     y2 = hoop_data[0][1]
 
-    if x1 < ball_data[0][0] < x2 and y1 < ball_data[0][1] < y2 - 0.5 * hoop_data[3]:
-        return True
-    return False
+    result = x1 < ball_data[0][0] < x2 and y1 < ball_data[0][1] < y2 - 0.5 * hoop_data[3]
+    #print(f"DEBUG: detect_up - Ball position: {ball_data[0]}, Hoop position: {hoop_data[0]}, Bounds: x[{x1}, {x2}], y[{y1}, {y2 - 0.5 * hoop_data[3]}], Result: {result}")
+    return result
 
 
 # Checks if center point is near the hoop
