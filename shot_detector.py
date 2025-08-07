@@ -32,6 +32,7 @@ class ShotLogger:
         self.progress = 0
         self.input_video = input_video
         self.ball_threshold = ball_threshold
+        self.hoop_threshold = 0.6  # Add hoop threshold as a class attribute
         self._first_frame_logged = False  # Add missing attribute
         self.output_dir = None  # Store output directory
         self.model_name = None  # Store model name for consistent naming
@@ -160,7 +161,7 @@ class ShotLogger:
         
         return filename
         
-    def log_frame_data(self, frame_count, all_balls, all_hoops, selected_ball_idx=-1, selected_hoop_idx=-1,
+    def log_frame_data(self, frame_count, all_balls, all_hoops, selected_ball=None, selected_hoop=None,
                        current_frame_balls=None, current_frame_hoops=None):
         """
         Log detailed frame processing data for analysis
@@ -169,8 +170,8 @@ class ShotLogger:
             frame_count: Current frame number
             all_balls: List of all ball trajectory points (historical data)
             all_hoops: List of all hoop trajectory points (historical data)
-            selected_ball_idx: Index of selected ball in all_balls (-1 if none)
-            selected_hoop_idx: Index of selected hoop in all_hoops (-1 if none)
+            selected_ball: Selected ball in current frame (None if none)
+            selected_hoop: Selected hoop in current frame (None if none)
             current_frame_balls: List of all balls detected by YOLO in current frame
             current_frame_hoops: List of all hoops detected by YOLO in current frame
         """
@@ -194,18 +195,16 @@ class ShotLogger:
         frame_data = {
             "frame": frame_count,
             "timestamp": frame_count / 30.0,  # Assuming 30fps
-            "ball_threshold": 0.2,  # Current ball confidence threshold
-            "hoop_threshold": 0.6,  # Current hoop confidence threshold
+            "ball_threshold": self.ball_threshold,  # Current ball confidence threshold
+            "hoop_threshold": self.hoop_threshold,  # Current hoop confidence threshold
             "trajectory_balls": [],  # Historical ball trajectory points
             "trajectory_hoops": [],  # Historical hoop trajectory points
             "current_detections": {  # All YOLO detections in current frame
                 "balls": current_frame_balls if current_frame_balls else [],
                 "hoops": current_frame_hoops if current_frame_hoops else []
             },
-            "selected_ball_idx": selected_ball_idx,
-            "selected_hoop_idx": selected_hoop_idx,
-            "selected_ball": all_balls[selected_ball_idx] if selected_ball_idx >= 0 else None,
-            "selected_hoop": all_hoops[selected_hoop_idx] if selected_hoop_idx >= 0 else None
+            "selected_ball": selected_ball,
+            "selected_hoop": selected_hoop
         }
         
         # Add all trajectory ball points (historical data)
@@ -216,7 +215,7 @@ class ShotLogger:
                 "frame": ball[1],
                 "confidence": float(ball[4]),
                 "size": {"width": ball[2], "height": ball[3]},
-                "above_threshold": float(ball[4]) >= 0.2
+                "above_threshold": float(ball[4]) >= self.ball_threshold
             })
 
         # Add all trajectory hoop points (historical data)
@@ -227,7 +226,7 @@ class ShotLogger:
                 "frame": hoop[1],
                 "confidence": float(hoop[4]),
                 "size": {"width": hoop[2], "height": hoop[3]},
-                "above_threshold": float(hoop[4]) >= 0.6
+                "above_threshold": float(hoop[4]) >= self.hoop_threshold
             })
         
         # Write frame data to debug file
@@ -407,7 +406,12 @@ class ShotDetector:
         
         # Set device based on availability
         self.device = get_device()
+
+        # Set thresholds
+        self.ball_threshold = ball_conf_threshold
+        self.hoop_threshold = 0.6  # Set hoop threshold as a class attribute
         
+        # Set device based on availability
         self.device = get_device()
         # Uncomment line below to use webcam (I streamed to my iPhone using Iriun Webcam)
         # self.cap = cv2.VideoCapture(0)
@@ -598,7 +602,7 @@ class ShotDetector:
 
             # Add ball and hoop positions to tracking arrays
             # Select the best ball from current frame detections
-            selected_ball_dic = select_ball(self.ball_pos, current_frame_balls, 0.5)
+            selected_ball_dic = select_ball(self.ball_pos, current_frame_balls, self.ball_threshold)
             selected_ball = None
             selected_hoop = None
             
@@ -615,7 +619,7 @@ class ShotDetector:
                 if current_frame_hoops:
                     # Find the hoop with highest confidence
                     best_hoop = max(current_frame_hoops, key=lambda x: x['confidence'])
-                    if best_hoop['confidence'] > 0.5:
+                    if best_hoop['confidence'] > self.hoop_threshold:
                         center = best_hoop['center']
                         w = best_hoop['size']['width']
                         h = best_hoop['size']['height']
@@ -631,16 +635,12 @@ class ShotDetector:
             all_balls = self.ball_pos if hasattr(self, 'ball_pos') else []
             all_hoops = self.hoop_pos if hasattr(self, 'hoop_pos') else []
             
-            # Determine selected indices (default to last detected if any)
-            selected_ball_idx = len(all_balls) - 1 if all_balls else -1
-            selected_hoop_idx = len(all_hoops) - 1 if all_hoops else -1
-            
             self.logger.log_frame_data(
                 self.frame_count,
                 all_balls,
                 all_hoops,
-                selected_ball_idx,
-                selected_hoop_idx,
+                selected_ball,
+                selected_hoop,
                 current_frame_balls,
                 current_frame_hoops
             )
