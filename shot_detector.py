@@ -448,7 +448,7 @@ class ShotDetector:
 
         # Scene change detection using PySceneDetect
         self.scene_changes = []
-        self.scene_change_threshold = 40.0  # Default threshold for scene change detection
+        self.scene_change_threshold = 30.0  # Default threshold for scene change detection
         self._detect_scene_changes()
         
         # Setup video writer if output path is provided
@@ -606,7 +606,6 @@ class ShotDetector:
             selected_ball_dic = select_ball(self.ball_pos, current_frame_balls, self.ball_threshold)
             selected_ball = None
             selected_hoop = None
-            
             # If a suitable ball was selected, add it to tracking
             if selected_ball_dic is not None:
                 center = selected_ball_dic['center']
@@ -634,6 +633,7 @@ class ShotDetector:
             #     self.ball_pos.append(selected_ball)
             
             # Draw detected objects
+           
             self.draw_detections(current_frame_balls, selected_ball_dic, current_frame_hoops)
 
             
@@ -649,8 +649,7 @@ class ShotDetector:
                 current_frame_hoops
             )
 
-            self.clean_motion()
-
+            self.draw_center_points(self.ball_pos,selected_hoop)
             self.detect_up_state(selected_ball, selected_hoop)
             self.detect_down_state(selected_ball, selected_hoop)
 
@@ -759,22 +758,22 @@ class ShotDetector:
             cv2.putText(self.frame, label, (x1, y1 - 5), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-    def clean_motion(self):
+    def draw_center_points(self,ball_pos,selected_hoop):
         # Draw ball trajectory with enhanced visibility
-        for i in range(0, len(self.ball_pos)):
-            cv2.circle(self.frame, self.ball_pos[i][0], 3, (0, 0, 255), -1)  # Filled circles
+        for i in range(0, len(ball_pos)):
+            cv2.circle(self.frame, ball_pos[i][0], 3, (0, 0, 255), -1)  # Filled circles
             # Add a border for better visibility
-            cv2.circle(self.frame, self.ball_pos[i][0], 4, (255, 255, 255), 2)
+            cv2.circle(self.frame, ball_pos[i][0], 4, (255, 255, 255), 2)
 
         # Clean hoop motion and display current hoop center
         # if len(self.hoop_pos) > 1:
         #     self.hoop_pos = clean_hoop_pos(self.hoop_pos)
         # Only draw hoop position if we have at least one position
-        if len(self.hoop_pos) > 0:
+        if selected_hoop:
             # Draw hoop position with enhanced visibility
-            cv2.circle(self.frame, self.hoop_pos[-1][0], 3, (128, 128, 0), -1)  # Filled circle
+            cv2.circle(self.frame, selected_hoop[0], 3, (128, 128, 0), -1)  # Filled circle
             # Add a border for better visibility
-            cv2.circle(self.frame, self.hoop_pos[-1][0], 4, (255, 255, 255), 2)
+            cv2.circle(self.frame, selected_hoop[0], 4, (255, 255, 255), 2)
 
     def detect_up_state(self, ball_pos, hoop_pos):
         """
