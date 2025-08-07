@@ -306,9 +306,9 @@ def select_ball(ball_pos, current_frame_balls, confidence_threshold):
         selected_ball: The selected ball or None if no suitable ball is found
     """
     # Remove points older than 30 frames
-    if len(ball_pos) > 0:
-        if ball_pos[0][1] < ball_pos[-1][1] - 30:
-            ball_pos.pop(0)
+    # if len(ball_pos) > 0:
+    #     if ball_pos[0][1] < ball_pos[-1][1] - 30:
+    #         ball_pos.pop(0)
     
     # Select the best ball from current frame detections
     selected_ball = None

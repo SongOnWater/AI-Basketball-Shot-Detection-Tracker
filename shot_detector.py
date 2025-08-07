@@ -22,7 +22,7 @@ from datetime import datetime
 import os
 
 class ShotLogger:
-    def __init__(self, input_video="video_test_5.mp4", ball_threshold=0.5):
+    def __init__(self, input_video="video_test_5.mp4", ball_threshold=0.6,hoop_threshold=0.6):
         self.shots = []
         self.start_time = time.time()
         self.start_datetime = datetime.now()
@@ -32,7 +32,7 @@ class ShotLogger:
         self.progress = 0
         self.input_video = input_video
         self.ball_threshold = ball_threshold
-        self.hoop_threshold = 0.6  # Add hoop threshold as a class attribute
+        self.hoop_threshold = hoop_threshold  # Add hoop threshold as a class attribute
         self._first_frame_logged = False  # Add missing attribute
         self.output_dir = None  # Store output directory
         self.model_name = None  # Store model name for consistent naming
@@ -197,6 +197,8 @@ class ShotLogger:
             "timestamp": frame_count / 30.0,  # Assuming 30fps
             "ball_threshold": self.ball_threshold,  # Current ball confidence threshold
             "hoop_threshold": self.hoop_threshold,  # Current hoop confidence threshold
+            "trajectory_balls_count": len(all_balls),  # Count of ball trajectory points
+            "trajectory_hoops_count": len(all_hoops),  # Count of hoop trajectory points
             "trajectory_balls": [],  # Historical ball trajectory points
             "trajectory_hoops": [],  # Historical hoop trajectory points
             "current_detections": {  # All YOLO detections in current frame
@@ -360,8 +362,7 @@ class ShotLogger:
             self._debug_log_file = None
 class ShotDetector:
     def __init__(self, input_video="video_test_5.mp4", output_video=None, model_path="best.pt", 
-                 ball_model_path=None, hoop_model_path=None, person_model_path=None, use_shared_model=True, 
-                 min_ball_area=400, enable_person_detection=False, model_config=None, debug_log_path=None, 
+                 ball_model_path=None,debug_log_path=None, 
                  output_dir=None, ball_conf_threshold=0.5):
         # For compatibility with batch_test_evaluator.py
         # Use ball_model_path if provided, otherwise fall back to model_path
@@ -614,31 +615,34 @@ class ShotDetector:
                 conf = selected_ball_dic['confidence']
                 selected_ball =(center, self.frame_count, w, h, conf)
                 self.ball_pos.append(selected_ball)
+                
             
-                # Add the highest confidence hoop to tracking
-                if current_frame_hoops:
-                    # Find the hoop with highest confidence
-                    best_hoop = max(current_frame_hoops, key=lambda x: x['confidence'])
-                    if best_hoop['confidence'] > self.hoop_threshold:
-                        center = best_hoop['center']
-                        w = best_hoop['size']['width']
-                        h = best_hoop['size']['height']
-                        conf = best_hoop['confidence']
-                        selected_hoop= (center, self.frame_count, w, h, conf)
-                        self.hoop_pos.append(selected_hoop)
+            # Add the highest confidence hoop to tracking
+            if current_frame_hoops:
+                # Find the hoop with highest confidence
+                best_hoop = max(current_frame_hoops, key=lambda x: x['confidence'])
+                if best_hoop['confidence'] > self.hoop_threshold:
+                    center = best_hoop['center']
+                    w = best_hoop['size']['width']
+                    h = best_hoop['size']['height']
+                    conf = best_hoop['confidence']
+                    selected_hoop= (center, self.frame_count, w, h, conf)
+                    self.hoop_pos.append(selected_hoop)
+
+            # if selected_ball and selected_hoop:  
+            #     self.hoop_pos.append(selected_hoop)
+            #     self.ball_pos.append(selected_ball)
             
             # Draw detected objects
             self.draw_detections(current_frame_balls, selected_ball_dic, current_frame_hoops)
 
             
-            # Log frame data before incrementing frame count
-            all_balls = self.ball_pos if hasattr(self, 'ball_pos') else []
-            all_hoops = self.hoop_pos if hasattr(self, 'hoop_pos') else []
+
             
             self.logger.log_frame_data(
                 self.frame_count,
-                all_balls,
-                all_hoops,
+                self.ball_pos,
+                self.hoop_pos,
                 selected_ball,
                 selected_hoop,
                 current_frame_balls,
